@@ -41,7 +41,6 @@ As a security engineer, reflecting a commitment to consistently being excellent 
 
 
 3. Automation and Efficiency: Build tools and scripts to automate repetitive tasks, such as vulnerability scanning, threat detection, and log monitoring. This reflects your commitment to innovation and ensuring efficiency in the security process.
-4. 
 
 
 4. Thorough Documentation: Keep meticulous records of security policies, incident response plans, audits, and risk assessments. High-quality documentation demonstrates attention to detail and ensures clarity for all stakeholders.
