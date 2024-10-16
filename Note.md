@@ -67,3 +67,25 @@ As a security engineer, reflecting a commitment to consistently being excellent 
 
 Each of these actions reflects excellence through a balance of technical skill, leadership, and continuous growth.
 
+
+
+If you or your team is involved in a project where you are contributing to automation efforts but are not directly automating things yourselves, you can still highlight your role and its value clearly. Here's how you might frame it:
+
+1. Facilitating Automation: "While not directly involved in coding or developing automation tools, I play a key role in collaborating with the automation team to ensure they have the necessary requirements, insights, and data to build effective automated solutions."
+
+
+2. Providing Expertise: "I provide critical expertise and guidance to the automation team, offering insights from a security/engineering perspective to help shape automated workflows that align with our organization’s standards and goals."
+
+
+3. Supporting Automation Initiatives: "My role involves supporting the automation process by analyzing needs, identifying potential bottlenecks, and ensuring the integration of automation tools meets operational requirements."
+
+
+4. Coordinating with Automation Teams: "I work closely with the automation teams, acting as a liaison between various stakeholders, ensuring that the systems they develop are efficient, secure, and tailored to our organizational objectives."
+
+
+5. Contributing Strategically: "Though I am not directly involved in the technical implementation of automation, I contribute by providing strategic direction, reviewing automation frameworks, and ensuring alignment with compliance and security policies."
+
+
+
+These types of sentences demonstrate that even though your role is not hands-on in automation, you are still an integral part of the process by providing essential inputs, oversight, and collaboration. It highlights that automation is a team effort, where each member contributes their expertise to the success of the overall initiative.
+
