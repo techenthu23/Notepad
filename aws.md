@@ -4,7 +4,7 @@ Here's a shell script that automates the process of listing AWS Service Catalog 
 ---
 
 Shell Script: get_servicecatalog_resources.sh
-
+```sh
 #!/bin/bash
 
 # Exit on any error
@@ -64,7 +64,7 @@ done
 echo ""
 echo "Done. All stack and resource details saved in the output/ folder."
 
-
+```
 ---
 
 Prerequisites
@@ -78,12 +78,12 @@ jq installed (sudo apt install jq or brew install jq)
 ---
 
 Run the Script
-
+```
 Save as get_servicecatalog_resources.sh, then:
 
 chmod +x get_servicecatalog_resources.sh
 ./get_servicecatalog_resources.sh
-
+```
 
 ---
 
