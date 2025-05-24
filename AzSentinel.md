@@ -1371,3 +1371,226 @@ $rules | ConvertTo-Json -Depth 10 | Out-File "analytics-rules.json"
 ---
 
 By following these steps, you’ll have a fully configured PowerShell environment to run `Get-Az*` commands and manage Azure Sentinel components.
+
+
+
+The **407 Proxy Authentication Required** error occurs when PowerShell (or the underlying .NET libraries) cannot authenticate with your proxy server, even if proxy environment variables are set. Here's how to resolve this:
+
+---
+
+### **1. Configure Proxy Settings in PowerShell**
+Set the proxy with credentials directly in your PowerShell session:
+
+```powershell
+# Replace with your proxy details
+$proxyAddress = "http://proxy-server:port"
+$proxyUser = "username"
+$proxyPassword = "password" | ConvertTo-SecureString -AsPlainText -Force
+$proxyCredential = New-Object System.Management.Automation.PSCredential ($proxyUser, $proxyPassword)
+
+# Set the proxy for the current session
+[System.Net.WebRequest]::DefaultWebProxy = New-Object System.Net.WebProxy($proxyAddress, $true)
+[System.Net.WebRequest]::DefaultWebProxy.Credentials = $proxyCredential
+```
+
+---
+
+### **2. Use Environment Variables with Credentials**
+Ensure your proxy environment variables include credentials (if required):
+
+```bash
+# For RHEL8 (set these before launching PowerShell)
+export HTTP_PROXY="http://username:password@proxy-server:port"
+export HTTPS_PROXY="http://username:password@proxy-server:port"
+```
+
+Then launch PowerShell:
+```bash
+pwsh
+```
+
+---
+
+### **3. Bypass Certificate Validation (if SSL inspection is enabled)**
+If your proxy performs SSL inspection, disable certificate validation (use cautiously):
+
+```powershell
+# Bypass SSL errors (temporary)
+[System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+```
+
+---
+
+### **4. Use `-UseDeviceAuthentication` for Interactive Login**
+If interactive login is allowed, use device authentication to bypass proxy issues:
+
+```powershell
+Connect-AzAccount -UseDeviceAuthentication
+```
+
+---
+
+### **5. Configure Proxy in `$PROFILE`**
+Add proxy settings to your PowerShell profile to persist across sessions:
+
+```powershell
+# Open the profile file
+if (!(Test-Path $PROFILE)) { New-Item -ItemType File -Path $PROFILE -Force }
+code $PROFILE
+
+# Add these lines to the profile:
+$proxyAddress = "http://proxy-server:port"
+$proxyUser = "username"
+$proxyPassword = "password" | ConvertTo-SecureString -AsPlainText -Force
+$proxyCredential = New-Object System.Management.Automation.PSCredential ($proxyUser, $proxyPassword)
+[System.Net.WebRequest]::DefaultWebProxy = New-Object System.Net.WebProxy($proxyAddress, $true)
+[System.Net.WebRequest]::DefaultWebProxy.Credentials = $proxyCredential
+```
+
+---
+
+### **6. Use `-Proxy` and `-ProxyCredential` Parameters**
+Some `Az` cmdlets support explicit proxy settings (e.g., `Invoke-WebRequest`):
+
+```powershell
+# Example for cmdlets that support -Proxy
+Invoke-WebRequest -Uri "https://example.com" -Proxy $proxyAddress -ProxyCredential $proxyCredential
+```
+
+---
+
+### **7. Configure .NET Framework Proxy Settings**
+For .NET applications (including PowerShell), create a `web.config` file:
+
+```xml
+<!-- /etc/dotnet/web.config -->
+<configuration>
+  <system.net>
+    <defaultProxy useDefaultCredentials="true">
+      <proxy proxyaddress="http://proxy-server:port" />
+    </defaultProxy>
+  </system.net>
+</configuration>
+```
+
+---
+
+### **8. Verify Proxy Settings**
+Check if the proxy is correctly configured in PowerShell:
+```powershell
+# View current proxy settings
+[System.Net.WebRequest]::DefaultWebProxy | Select-Object Address, Credentials
+```
+
+---
+
+### **Key Notes**
+- **NTLM Authentication**: If your proxy uses NTLM/Kerberos, ensure credentials are passed correctly.
+- **Firewall Rules**: Whitelist Azure endpoints (e.g., `login.microsoftonline.com`, `management.azure.com`).
+- **Network Policies**: Work with your network team to ensure the proxy allows Azure traffic.
+
+If the issue persists, review proxy logs or contact your network administrator to troubleshoot the 407 error.
+
+
+### Step 7: Configure .NET Framework Proxy Settings  
+**Applicability**:  
+This step is relevant if you're working with **.NET-based applications** (including PowerShell and the Azure PowerShell modules), which might ignore system-wide proxy settings or environment variables. The `web.config` file provides a way to enforce proxy configurations for .NET applications.
+
+---
+
+### **What Does Step 7 Do?**
+On Windows, .NET Framework applications (like PowerShell) often read proxy settings from a `web.config` file. On Linux (e.g., RHEL), **.NET Core** (used by PowerShell 7+) behaves differently and relies more on environment variables. However, some legacy .NET code or libraries might still require explicit proxy configuration.  
+This step ensures that .NET applications (including PowerShell and the `Az` module) honor your proxy settings, even if environment variables aren’t sufficient.
+
+---
+
+### **Why Use `web.config`?**
+- **Proxy Authentication**: If your proxy requires authentication (e.g., NTLM, Basic Auth), .NET might not automatically use credentials from environment variables like `HTTP_PROXY`.
+- **Global Configuration**: Ensures all .NET-based tools (including PowerShell) use the same proxy settings.
+- **Bypass Local Addresses**: Configure exceptions for internal URLs that shouldn’t go through the proxy.
+
+---
+
+### **How to Configure `.NET Proxy` on RHEL 8 (Linux)**
+On Linux, `.NET Core` (used by PowerShell 7+) does **not** use `web.config` by default. Instead, use these methods:
+
+#### **1. **Use Environment Variables**  
+Set proxy credentials explicitly in your shell:  
+```bash
+# Replace with your proxy details
+export HTTP_PROXY="http://username:password@proxy-server:port"
+export HTTPS_PROXY="http://username:password@proxy-server:port"
+export NO_PROXY="localhost,127.0.0.1,.internal-domain.com"
+```
+- These variables are typically honored by .NET Core and PowerShell on Linux.
+
+#### **2. **Programmatically Configure Proxy in PowerShell**  
+Add this to your PowerShell profile (`$PROFILE`) to enforce proxy settings for all sessions:  
+```powershell
+# Set proxy with credentials in PowerShell
+$proxyAddress = "http://proxy-server:port"
+$proxyUser = "your-username"
+$proxyPassword = "your-password" | ConvertTo-SecureString -AsPlainText -Force
+$proxyCredential = New-Object System.Management.Automation.PSCredential ($proxyUser, $proxyPassword)
+
+# Apply to .NET's global proxy settings
+[System.Net.WebRequest]::DefaultWebProxy = New-Object System.Net.WebProxy($proxyAddress, $true)
+[System.Net.WebRequest]::DefaultWebProxy.Credentials = $proxyCredential
+```
+
+#### **3. **Use `DOTNET_SYSTEM_NET_HTTP_USEDEFAULTPROXY`**  
+For .NET Core 3.1+ applications, set this environment variable to force .NET to use system proxy settings:  
+```bash
+export DOTNET_SYSTEM_NET_HTTP_USEDEFAULTPROXY=true
+```
+
+---
+
+### **Key Notes for Linux (RHEL 8)**
+1. **No `web.config`**: Unlike Windows, `.NET Core` on Linux does **not** use `web.config` for proxy configuration. Use environment variables or code-based settings.
+2. **PowerShell-Specific Fix**:  
+   If `Connect-AzAccount` still fails after setting environment variables, explicitly configure the proxy in PowerShell:  
+   ```powershell
+   # Run this before connecting to Azure
+   [System.Net.WebRequest]::DefaultWebProxy = New-Object System.Net.WebProxy("http://proxy-server:port", $true)
+   [System.Net.WebRequest]::DefaultWebProxy.Credentials = [System.Net.CredentialCache]::DefaultNetworkCredentials
+   ```
+3. **SSL/TLS Issues**: If your proxy intercepts HTTPS traffic (SSL inspection), bypass certificate validation (temporarily):  
+   ```powershell
+   # Bypass SSL errors (not recommended for production)
+   [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+   ```
+
+---
+
+### **Verification**
+1. Check if .NET recognizes the proxy:  
+   ```powershell
+   [System.Net.WebRequest]::DefaultWebProxy | Select-Object Address, Credentials
+   ```
+   Output should show your proxy address and credentials.
+
+2. Test connectivity:  
+   ```powershell
+   Invoke-WebRequest -Uri "https://login.microsoftonline.com" -UseBasicParsing
+   ```
+
+---
+
+### **Troubleshooting**
+- **Error 407 Persists**:  
+  Ensure credentials are correctly encoded (e.g., `http://user:password@proxy:port`).  
+  Work with your network team to validate proxy rules for Azure endpoints (`login.microsoftonline.com`, `management.azure.com`).
+
+- **Logs**:  
+  Enable debug logging in PowerShell:  
+  ```powershell
+  $DebugPreference = "Continue"
+  Connect-AzAccount
+  ```
+
+---
+
+### **Summary**  
+For RHEL 8 (Linux), prioritize **environment variables** and **PowerShell profile configurations** over `web.config`. If issues persist, validate proxy credentials and network policies with your IT team.
+
