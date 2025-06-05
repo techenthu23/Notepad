@@ -1313,7 +1313,7 @@ C:\SentinelExport\
 
 
 ---
-
+```
 🧾 Script: Export-Sentinel-Components.ps1
 
 param (
@@ -1409,7 +1409,7 @@ foreach ($folderName in $resourceMap.Keys) {
 
 Write-Host "`nExport completed! Resources saved under: $outputBase" -ForegroundColor Green
 
-
+```
 ---
 
 ✅ Benefits
@@ -1567,7 +1567,7 @@ Great follow-up! Here's how you can import/deploy Logic Apps (Standard or Consum
 After exporting a Logic App’s definition (from Export-LogicApps.ps1), you can import it using:
 
 📄 PowerShell Script to Import Logic App
-
+```
 param (
     [string]$ResourceGroupName,
     [string]$LogicAppName,
@@ -1583,6 +1583,7 @@ New-AzLogicApp -ResourceGroupName $ResourceGroupName `
                -Definition $definition
 
 Write-Host "Logic App [$LogicAppName] deployed successfully in [$ResourceGroupName]" -ForegroundColor Green
+```
 
 > 📝 Note: This works for Logic Apps Consumption Plan (under Microsoft.Logic/workflows), which Sentinel typically uses for playbooks.
 
@@ -1596,7 +1597,7 @@ Write-Host "Logic App [$LogicAppName] deployed successfully in [$ResourceGroupNa
 You can include logic app files like this:
 
 📄 ARM Template Snippet
-
+```
 {
   "type": "Microsoft.Logic/workflows",
   "apiVersion": "2019-05-01",
@@ -1617,6 +1618,7 @@ You can include logic app files like this:
     }
   }
 }
+```
 
 Use parameters or static names for easy ARM deployment.
 
