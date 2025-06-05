@@ -1143,7 +1143,7 @@ Exports into C:\SentinelExport\Resources.json (full ARM template)
 ---
 
 🧾 PowerShell Script: Export-Sentinel-ToARM.ps1
-
+```
 param (
     [Parameter(Mandatory)]
     [string]$SubscriptionId,
@@ -1246,7 +1246,7 @@ if (-not (Test-Path $outputFolder)) {
 $template | ConvertTo-Json -Depth 10 | Out-File -FilePath $outputFile -Force -Encoding utf8
 
 Write-Host "`nExport complete! ARM Template saved to:`n$outputFile" -ForegroundColor Green
-
+```
 
 ---
 
@@ -1260,17 +1260,17 @@ Write-Host "`nExport complete! ARM Template saved to:`n$outputFile" -ForegroundC
 
 
 🔹 Option 1: PowerShell
-
+```
 New-AzResourceGroupDeployment -Name "SentinelImport" `
   -ResourceGroupName "<new-RG>" `
   -TemplateFile "Sentinel-ARM-Template.json"
-
+```
 🔹 Option 2: Azure CLI
-
+```
 az deployment group create \
   --resource-group <new-RG> \
   --template-file Sentinel-ARM-Template.json
-
+```
 
 ---
 
@@ -1302,7 +1302,7 @@ Great! Below is a modular PowerShell script that:
 ---
 
 📂 Output Folder Structure (under C:\SentinelExport)
-
+```
 C:\SentinelExport\
 ├── AnalyticsRules\
 ├── AutomationRules\
@@ -1310,7 +1310,7 @@ C:\SentinelExport\
 ├── HuntingQueries\
 ├── Watchlists\
 └── DataConnectors\
-
+```
 
 ---
 ```
@@ -1452,7 +1452,7 @@ Exports Analytics Rules, Automation Rules, Workbooks, Hunting Queries, Watchlist
 ---
 
 🔁 2. Script to Reassemble into a Unified ARM Template
-
+```
 param (
     [string]$InputFolder = "C:\SentinelExport",
     [string]$OutputFile = "C:\SentinelExport\Sentinel-ARM-Template.json"
@@ -1476,7 +1476,7 @@ $template = @{
 
 $template | ConvertTo-Json -Depth 20 | Out-File -FilePath $OutputFile -Encoding utf8 -Force
 Write-Host "`nUnified ARM template created at: $OutputFile" -ForegroundColor Green
-
+```
 
 ---
 
@@ -1485,7 +1485,7 @@ Write-Host "`nUnified ARM template created at: $OutputFile" -ForegroundColor Gre
 Create a folder with:
 
 📄 main.tf
-
+```
 provider "azurerm" {
   features {}
 }
@@ -1507,19 +1507,19 @@ variable "resource_group_name" {
 📄 terraform.tfvars
 
 resource_group_name = "your-new-RG-name"
-
+```
 Run:
-
+```
 terraform init
 terraform apply
 
-
+```
 ---
 
 🔌 4. Export Logic Apps for Automation Rules (If Any)
 
 📄 Export-LogicApps.ps1
-
+```
 param (
     [Parameter(Mandatory)]
     [string]$ResourceGroupName
@@ -1538,7 +1538,7 @@ foreach ($app in $logicApps) {
 ✅ You can later re-import them with:
 
 New-AzLogicApp -ResourceGroupName <newRG> -Name <LogicAppName> -Location <region> -DefinitionFile <path>
-
+```
 
 ---
 
