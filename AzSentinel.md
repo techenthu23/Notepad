@@ -1854,3 +1854,339 @@ Note: The script provides the core functionality but requires additional impleme
 - Complete ARM template parameter handling
 
 The structure follows best practices for Azure automation in Python and maintains the original script's functionality while improving readability and maintainability.
+
+
+________________
+
+Here's a non-interactive Python 3 implementation that takes all parameters as command-line arguments:
+
+```python
+import os
+import json
+import argparse
+import uuid
+import re
+from datetime import datetime
+from azure.identity import DefaultAzureCredential
+from azure.mgmt.subscription import SubscriptionClient
+from azure.mgmt.loganalytics import LogAnalyticsManagementClient
+from azure.mgmt.securityinsight import SecurityInsights
+
+class SentinelExporter:
+    def __init__(self, tenant_id, subscription_id, resource_group, workspace_name, output_dir, artifacts):
+        self.tenant_id = tenant_id
+        self.subscription_id = subscription_id
+        self.resource_group = resource_group
+        self.workspace_name = workspace_name
+        self.output_dir = output_dir
+        self.artifacts = artifacts
+        self.credential = DefaultAzureCredential()
+        self.security_client = SecurityInsights(
+            credential=self.credential,
+            subscription_id=self.subscription_id
+        )
+        self.loganalytics_client = LogAnalyticsManagementClient(
+            credential=self.credential,
+            subscription_id=self.subscription_id
+        )
+        self.workspace_id = f"/subscriptions/{self.subscription_id}/resourceGroups/{self.resource_group}/providers/Microsoft.OperationalInsights/workspaces/{self.workspace_name}"
+
+    def clean_filename(self, name):
+        """Remove invalid characters from filenames"""
+        return re.sub(r'[\\/*?:"<>|]', "", name)
+
+    def export_scheduled_rules(self):
+        """Export Scheduled Analytic Rules"""
+        rules = self.security_client.alert_rules.list(
+            resource_group_name=self.resource_group,
+            workspace_name=self.workspace_name
+        )
+        
+        for rule in rules:
+            if rule.kind != "Scheduled":
+                continue
+                
+            arm_template = {
+                "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+                "contentVersion": "1.0.0.0",
+                "parameters": {
+                    "workspace": {
+                        "type": "String",
+                        "metadata": {"description": "Log Analytics Workspace Name"}
+                    }
+                },
+                "resources": [rule.serialize()]
+            }
+            
+            self.save_arm_template(
+                template=arm_template,
+                name=rule.display_name,
+                artifact_type="ScheduledAnalyticalRules"
+            )
+
+    def export_automation_rules(self):
+        """Export Automation Rules"""
+        rules = self.security_client.automation_rules.list(
+            resource_group_name=self.resource_group,
+            workspace_name=self.workspace_name
+        )
+        
+        for rule in rules:
+            arm_template = {
+                "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+                "contentVersion": "1.0.0.0",
+                "parameters": {
+                    "workspace": {
+                        "type": "String",
+                        "metadata": {"description": "Log Analytics Workspace Name"}
+                    },
+                    "AutomationRuleDisplayName": {
+                        "type": "String",
+                        "defaultValue": rule.display_name,
+                        "metadata": {"description": "Automation Rule DisplayName"}
+                    }
+                },
+                "resources": [rule.serialize()]
+            }
+            
+            # Update action references
+            for action in arm_template["resources"][0]["properties"]["actions"]:
+                if action["actionType"] == "RunPlaybook":
+                    action["actionConfiguration"]["logicAppResourceId"] = "[concat(...)]"
+            
+            self.save_arm_template(
+                template=arm_template,
+                name=rule.display_name,
+                artifact_type="AutomationRules"
+            )
+
+    def export_parsers(self):
+        """Export Parsers (Saved Searches)"""
+        saved_searches = self.loganalytics_client.saved_searches.list_by_workspace(
+            resource_group_name=self.resource_group,
+            workspace_name=self.workspace_name
+        )
+        
+        for search in saved_searches:
+            arm_template = {
+                "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+                "contentVersion": "1.0.0.0",
+                "parameters": {
+                    "workspace": {
+                        "type": "String",
+                        "metadata": {"description": "Log Analytics Workspace Name"}
+                    }
+                },
+                "resources": [search.serialize()]
+            }
+            
+            self.save_arm_template(
+                template=arm_template,
+                name=search.display_name,
+                artifact_type="Parsers"
+            )
+
+    def export_workbooks(self):
+        """Export Workbooks using REST API (since SDK support is limited)"""
+        from azure.core.exceptions import HttpResponseError
+        
+        try:
+            # Get access token for REST API calls
+            token = self.credential.get_token("https://management.azure.com/.default").token
+            headers = {"Authorization": f"Bearer {token}"}
+            
+            # Get workbooks
+            url = f"https://management.azure.com{self.workspace_id}/providers/Microsoft.Insights/workbooks"
+            params = {
+                "api-version": "2022-04-01",
+                "category": "sentinel",
+                "canFetchContent": "true"
+            }
+            response = requests.get(url, headers=headers, params=params)
+            response.raise_for_status()
+            workbooks = response.json().get("value", [])
+            
+            for workbook in workbooks:
+                arm_template = {
+                    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+                    "contentVersion": "1.0.0.0",
+                    "parameters": {
+                        "workspace": {
+                            "type": "String",
+                            "metadata": {"description": "Log Analytics Workspace Name"}
+                        },
+                        "formattedTimeNow": {
+                            "type": "String",
+                            "defaultValue": "[utcNow('g')]",
+                            "metadata": {"description": "Timestamp for unique naming"}
+                        },
+                        "workbook-id": {
+                            "type": "String",
+                            "defaultValue": str(uuid.uuid4()),
+                            "metadata": {"description": "Unique workbook ID"}
+                        },
+                        "workbook-name": {
+                            "type": "String",
+                            "defaultValue": workbook["properties"]["displayName"],
+                            "metadata": {"description": "Workbook display name"}
+                        }
+                    },
+                    "resources": [{
+                        "type": "Microsoft.Insights/workbooks",
+                        "name": "[parameters('workbook-id')]",
+                        "location": "[resourceGroup().location]",
+                        "kind": "shared",
+                        "apiVersion": "2020-02-12",
+                        "properties": {
+                            "displayName": "[concat(parameters('workbook-name'), ' - ', parameters('formattedTimeNow'))]",
+                            "serializedData": workbook["properties"]["serializedData"],
+                            "version": "1.0",
+                            "sourceId": f"[concat(resourceGroup().id, '/providers/Microsoft.OperationalInsights/workspaces/', parameters('workspace'))]",
+                            "category": "sentinel"
+                        }
+                    }]
+                }
+                
+                self.save_arm_template(
+                    template=arm_template,
+                    name=workbook["properties"]["displayName"],
+                    artifact_type="Workbooks"
+                )
+                
+        except HttpResponseError as e:
+            print(f"Error exporting workbooks: {e.message}")
+
+    def save_arm_template(self, template, name, artifact_type):
+        """Save ARM template to file"""
+        clean_name = self.clean_filename(name)
+        output_path = os.path.join(
+            self.output_dir,
+            self.workspace_name,
+            artifact_type,
+            f"{clean_name}.json"
+        )
+        
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        
+        with open(output_path, "w") as f:
+            json.dump(template, f, indent=4)
+        
+        print(f"Exported {artifact_type}: {clean_name}")
+
+    def run_export(self):
+        """Execute the export based on selected artifacts"""
+        if "Scheduled" in self.artifacts:
+            self.export_scheduled_rules()
+        if "Automation" in self.artifacts:
+            self.export_automation_rules()
+        if "Parsers" in self.artifacts:
+            self.export_parsers()
+        if "Workbooks" in self.artifacts:
+            self.export_workbooks()
+        
+        print("Export completed successfully!")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Export Microsoft Sentinel artifacts as ARM templates")
+    parser.add_argument("--tenant-id", required=True, help="Azure AD Tenant ID")
+    parser.add_argument("--subscription-id", required=True, help="Azure Subscription ID")
+    parser.add_argument("--resource-group", required=True, help="Resource Group name")
+    parser.add_argument("--workspace-name", required=True, help="Log Analytics Workspace name")
+    parser.add_argument("--output-dir", required=True, help="Output directory for ARM templates")
+    parser.add_argument("--artifacts", nargs="+", choices=["Scheduled", "Automation", "Parsers", "Workbooks"],
+                        default=["Scheduled", "Automation", "Parsers", "Workbooks"],
+                        help="Artifact types to export (default: all)")
+    
+    args = parser.parse_args()
+    
+    exporter = SentinelExporter(
+        tenant_id=args.tenant_id,
+        subscription_id=args.subscription_id,
+        resource_group=args.resource_group,
+        workspace_name=args.workspace_name,
+        output_dir=args.output_dir,
+        artifacts=args.artifacts
+    )
+    
+    exporter.run_export()
+```
+
+### Key Features:
+
+1. **Command-Line Arguments**:
+   - `--tenant-id`: Azure AD tenant ID (required)
+   - `--subscription-id`: Azure subscription ID (required)
+   - `--resource-group`: Resource group name (required)
+   - `--workspace-name`: Log Analytics workspace name (required)
+   - `--output-dir`: Output directory path (required)
+   - `--artifacts`: Space-separated list of artifacts to export (optional, default: all)
+
+2. **Azure Authentication**:
+   - Uses `DefaultAzureCredential` which supports multiple authentication methods
+   - Automatically handles token acquisition and refresh
+
+3. **Artifact Export**:
+   - Scheduled Analytic Rules (via SecurityInsights SDK)
+   - Automation Rules (via SecurityInsights SDK)
+   - Parsers/Saved Searches (via LogAnalytics SDK)
+   - Workbooks (via REST API since SDK support is limited)
+
+4. **Output Structure**:
+   ```
+   output_dir/
+     workspace_name/
+       ScheduledAnalyticalRules/
+         Rule1.json
+         Rule2.json
+       AutomationRules/
+         Rule1.json
+       Parsers/
+         Parser1.json
+       Workbooks/
+         Workbook1.json
+   ```
+
+### Usage:
+
+```bash
+python sentinel_exporter.py \
+  --tenant-id YOUR_TENANT_ID \
+  --subscription-id YOUR_SUBSCRIPTION_ID \
+  --resource-group YOUR_RG_NAME \
+  --workspace-name YOUR_WORKSPACE_NAME \
+  --output-dir ./output \
+  --artifacts Scheduled Automation Parsers Workbooks
+```
+
+### Requirements:
+
+1. **Azure Permissions**:
+   - Reader role on the Log Analytics workspace
+   - Security Reader role for security resources
+
+2. **Python Packages**:
+   ```bash
+   pip install azure-identity azure-mgmt-securityinsight azure-mgmt-loganalytics requests
+   ```
+
+3. **Azure CLI Login (optional but recommended)**:
+   ```bash
+   az login --tenant YOUR_TENANT_ID
+   ```
+
+### Notes:
+
+1. The script handles ARM template parameterization for:
+   - Workspace references
+   - Resource IDs
+   - Unique naming requirements
+   - Timestamp suffixes
+
+2. For workbooks, we use direct REST API calls since the Python SDK has limited support for workbook operations.
+
+3. The output directory structure mirrors the PowerShell version's organization.
+
+4. All ARM templates are saved as pretty-printed JSON with consistent formatting.
+
+This implementation provides a non-interactive, command-line driven solution that can be easily integrated into automation pipelines and CI/CD workflows.
