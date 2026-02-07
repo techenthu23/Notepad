@@ -1,0 +1,6780 @@
+Please advice on setting up a Git branching strategy on GitLab for three environments: Dev, UAT, and Prod ( git branch: main). With parallel development in mind, please list common scenarios I might encounter in the development and release processes, including:
+
+    - Regular feature releases
+    - Hotfixes and bug fixes for Prod/UAT/Dev 
+    - How to deploy without contaminating your Prod hotfix with unreleased features in Dev and UAT Env
+    - Production deployments
+    - Regression issues ( Cannot do a hard reset by deleting the commit)
+    - Downgrading from a higher version to a lower one for release
+    - Commit conflicts (including situations and resolutions)
+    - Recommended source branch for checkout in each sceanrio
+    - Merge request (MR) targets and source branches
+    - Which alls should be protected branch and how it should be configured?
+    - Preferred approach - Git tag or release branches or combination
+    - Gitlab CICD pipeline validation 
+
+=============g===============
+
+Setting up a robust branching strategy is the "measure twice, cut once" of DevOps. For a three-environment setup (Dev, UAT, Prod) with parallel development, I recommend a **GitLab Flow** variation. It balances the structure of GitFlow with the speed of Trunk-Based development.
+
+Since you have designated **`main` as Production**, the best approach is a structured **Environment-Branching model**. This ensures that your code flows through a "promotion" pipeline, where each merge represents a step closer to the end user.
+
+---
+
+## 1. Branch Hierarchy & Setup
+
+| Environment    | GitLab Branch | Purpose                                     |
+| -------------- | ------------- | ------------------------------------------- |
+| **Production** | `main`        | Mirror of live code. Stable and tested.     |
+| **UAT**        | `uat`         | Pre-production testing/Staging.             |
+| **Dev**        | `develop`     | Integration branch for all active features. |
+| **Feature**    | `feature/*`   | Individual tasks/user stories.              |
+
+---
+
+## 2. Common Scenarios & Workflows
+
+### Regular Feature Releases
+
+* **Checkout from:** `develop`
+* **Work on:** `feature/my-feature`
+* **MR Target:** `develop`
+* **Promotion:** Once tested in Dev, create an MR from `develop` → `uat`. After UAT sign-off, MR `uat` → `main`.
+
+### Hotfixes and Bug Fixes
+
+* **Production Hotfix:** Checkout from `main`. Merge back to `main` **and** `develop` (to prevent regression in the next release).
+* **UAT/Dev Bug Fix:** Checkout from `develop`. Merge to `develop`, then promote to `uat`. Avoid fixing directly on `uat` to keep history synchronized.
+
+### Production Deployments
+
+Deployments should be triggered by the **Merge Request to `main**`. Once the MR is merged, a GitLab CI/CD pipeline should automatically trigger the production deployment and create a **Git Tag** (e.g., `v1.2.0`).
+
+### Regression Issues
+
+If a bug is found in `uat` that wasn't in `develop`:
+
+1. Identify the faulty commit.
+2. Fix it on a new branch from `develop`.
+3. Merge to `develop` and re-promote to `uat`.
+*Note: This ensures the "fix" is part of the standard lineage.*
+
+### Downgrading (Rollbacks)
+
+Never "downgrade" a branch by deleting commits (this breaks everyone else's local Git history).
+
+* **Strategy:** Use GitLab’s **"Revert"** button on the specific Merge Request. This creates a new commit that undoes the changes while keeping the history linear and safe.
+
+### Commit Conflicts
+
+* **Situation:** Two developers modify the same line in `develop`.
+* **Resolution:** Before merging your `feature` branch, run `git pull origin develop`. Resolve conflicts locally, commit the resolution, and then push. GitLab will then allow the MR to proceed.
+
+---
+
+## 3. MR Matrix (Source & Targets)
+
+| Activity          | Source Branch | Target Branch      |
+| ----------------- | ------------- | ------------------ |
+| **Feature Work**  | `feature/*`   | `develop`          |
+| **QA Handover**   | `develop`     | `uat`              |
+| **Go-Live**       | `uat`         | `main`             |
+| **Emergency Fix** | `hotfix/*`    | `main` & `develop` |
+
+---
+
+## 4. Git Tags vs. Release Branches
+
+### Git Tags (Recommended for UAT/Prod)
+
+* **Pros:** Immutable (they don't change), lightweight, and serve as a perfect "bookmark" for what was deployed.
+* **Cons:** You cannot "add a quick fix" to a tag. You must create a new one.
+
+### Release Branches (Recommended for "Parallel" Versions)
+
+* **Pros:** If you need to support Version 1.0 while developing Version 2.0, a release branch (`release/1.0`) allows you to apply fixes to the old version without taking in new features.
+* **Cons:** High maintenance; you must constantly "back-port" fixes to multiple branches.
+
+**My Advice:** Stick to **Git Tags** for your `main` branch. Only use Release Branches if you are managing a product where customers might stay on older versions (like a mobile app or an API with legacy support).
+
+---
+
+## 5. Protected Branch Configuration
+
+Navigate to **Settings > Repository > Protected Branches** in GitLab and apply these rules:
+
+1. **`main`**:
+* **Allowed to push:** No one.
+* **Allowed to merge:** Maintainers only.
+* **Requirements:** Require "Pipeline must succeed" and at least 2 approvals.
+
+
+2. **`uat`**:
+* **Allowed to push:** No one.
+* **Allowed to merge:** Maintainers / Developers.
+* **Requirements:** Require "Pipeline must succeed."
+
+
+3. **`develop`**:
+* **Allowed to push:** No one (Force all work through MRs).
+* **Allowed to merge:** Developers / Maintainers.
+
+
+
+Would you like me to help you draft the **GitLab CI/CD yaml** code to automate the deployments for these specific branches?
+
+
+
+This is the classic "hotfix contamination" dilemma. If you merge your hotfix into `develop` or `uat` to test it, you risk mixing your emergency fix with "work-in-progress" features that aren't ready for Production.
+
+To keep your Hotfix "pure," you must use a **Temporary Verification Environment** or a **Dedicated Hotfix Sandbox**.
+
+---
+
+### The Recommended Workflow for Hotfixes
+
+To avoid contaminating your hotfix with unreleased features in `develop` or `uat`, follow this path:
+
+#### 1. Isolation
+
+* **Checkout:** `git checkout -b hotfix/critical-patch main`
+* **Fix:** Apply the fix and commit it.
+
+#### 2. Testing (The "Where")
+
+Since you cannot use `develop` or `uat` (as they contain unreleased code), you have three options:
+
+* **Option A: ephemeral/Review Apps (Best Practice):** If your GitLab CI/CD is configured for "Review Apps," GitLab will spin up a temporary, isolated environment specifically for that hotfix branch. This is the cleanest way to test.
+* **Option B: Manual Sandbox:** Deploy the `hotfix/critical-patch` branch to a temporary "Sandbox" or "Staging-2" environment that is currently empty or mirrors Production.
+* **Option C: Local/Dev Machine:** For minor logic fixes, thorough local unit testing and peer review might suffice if a dedicated environment isn't available.
+
+#### 3. The Promotion (The "How")
+
+Once the hotfix is verified in isolation:
+
+1. **To Prod:** MR `hotfix/critical-patch` → **`main`**. Deploy immediately.
+2. **To Others:** MR `hotfix/critical-patch` → **`develop`**.
+3. **Sync:** Once `develop` is updated, merge `develop` → **`uat`** whenever you are ready to refresh the UAT environment.
+
+---
+
+### What happens to existing features?
+
+If you follow the path above, **nothing happens to them.** * By branching from `main`, your hotfix **does not see** the new features sitting in `develop`.
+
+* By merging from the hotfix branch into `main`, you ensure **only the fix** goes to Production.
+
+### Common "Trap" to Avoid
+
+**The Trap:** Merging `main` (with the hotfix) into `uat` or `develop` immediately.
+**The Risk:** This is actually safe, but **merging `uat` into your hotfix branch** is the danger. Never pull "up" from a lower environment into a hotfix, or you will accidentally "piggyback" unreleased features into your Production deployment.
+
+---
+
+### Summary of Rules for Hotfixes
+
+* **Source:** Always branch from `main`.
+* **Test:** Use a temporary environment or local dev; avoid the "polluted" `uat` branch.
+* **Target:** MR to `main` first, then "down-merge" to `develop` so the fix exists in future releases.
+* **Conflicts:** If the hotfix conflicts with a new feature in `develop`, resolve the conflict **only** in the `develop` branch MR, never on the `main` branch.
+
+Would you like me to explain how to set up **GitLab Review Apps** so you can test these hotfixes in isolated environments automatically? 
+
+
+If you are constrained to existing namespaces (**Dev** or **UAT**) and cannot create dynamic ones, you face a "Traffic Management" challenge. Since **UAT** usually contains features that aren't in Production yet, using it to test a Hotfix (which must only contain Prod code + the fix) creates a high risk of "release contamination."
+
+Here is how to handle a Hotfix using only your fixed **Dev** or **UAT** namespaces without polluting your release pipeline.
+
+---
+
+## 1. The "Pre-emptive Wipe" Strategy
+
+Since you cannot create a new namespace, you must "borrow" one. Usually, **Dev** is the best candidate because it is more volatile than UAT.
+
+### The Workflow:
+
+1. **Notify the Team:** "Freezing Dev namespace for 30 minutes for Hotfix verification."
+2. **Deploy Hotfix to Dev:** Manually trigger a CI/CD job that points the `hotfix/*` branch to the **Dev** Kubernetes namespace. This will overwrite the current "Dev" version with the "Hotfix" version.
+3. **Verify:** Test your hotfix in the Dev environment.
+4. **Promote:** Merge `hotfix` → `main` and deploy to Prod.
+5. **Restore:** Re-deploy the `develop` branch to the **Dev** namespace to bring back the features you just overwrote.
+
+---
+
+## 2. The "Side-by-Side" Strategy (Kubernetes Ingress)
+
+If you can't wipe the Dev environment, you can deploy a **second instance** of your app into the *same* namespace with a different name.
+
+* **Standard App:** `my-app-dev.example.com` (running the `develop` branch)
+* **Hotfix Instance:** `my-app-hotfix.example.com` (running the `hotfix` branch)
+
+### How to configure `.gitlab-ci.yml`:
+
+You can use your Helm chart to suffix the release name so it doesn't overwrite the main Dev deployment.
+
+```yaml
+deploy_hotfix_to_dev_ns:
+  stage: deploy
+  script:
+    # We use the same namespace but a different Helm Release Name
+    - helm upgrade --install hotfix-preview-$CI_COMMIT_REF_SLUG ./charts/my-app 
+      --namespace dev-namespace
+      --set ingress.host=hotfix-check.example.com
+      --set fullnameOverride=hotfix-$CI_COMMIT_REF_SLUG
+  only:
+    - /^hotfix\/.*$/
+
+```
+
+---
+
+## 3. Handling the Scenarios (Updated for Fixed Namespaces)
+
+### Production Hotfix & Bug Fixes
+
+* **Scenario:** You need to fix a Prod bug but `uat` is full of unreleased v2.0 code.
+* **Action:** Branch from `main`. Use the **Side-by-Side** method in the **Dev namespace**. This keeps the `uat` environment stable for the QA team working on v2.0 while you verify the hotfix in the Dev space under a different URL.
+
+### Regression Issues
+
+* **Scenario:** A bug appears in `uat` during final testing.
+* **Action:** Fix it on a branch from `develop`. Merge to `develop` first. Then merge `develop` to `uat`. Since you are limited to these namespaces, `uat` is your final gate. If a regression is found, you must fix it in `develop` and "push" the fix forward into `uat`.
+
+### Downgrading (Rollbacks) in K8s
+
+* **Action:** Since you have fixed namespaces, use **Helm Rollbacks**.
+* `helm rollback my-app-prod 1`
+
+
+* This is faster than a Git revert because it communicates directly with Kubernetes to restore the previous Container Image and ConfigMap immediately.
+
+---
+
+## 4. Protected Branch Configuration (The "No-Direct-Push" Rule)
+
+In this "Fixed Namespace" setup, permissions are your only line of defense against accidental overwrites.
+
+| Branch        | Target K8s Namespace | Permission                                                                              |
+| ------------- | -------------------- | --------------------------------------------------------------------------------------- |
+| **`main`**    | `prod-ns`            | **Maintainer Only.** Deployment triggered by Tag or MR merge.                           |
+| **`uat`**     | `uat-ns`             | **Maintainer/Lead.** Prevents devs from pushing unfinished code to the final test gate. |
+| **`develop`** | `dev-ns`             | **Developers.** Automatic deployment on every merge to `develop`.                       |
+
+---
+
+## 5. Summary of the MR Flow
+
+1. **Feature:** `feature` → `develop` (Auto-deploys to `dev-ns`).
+2. **Release:** `develop` → `uat` (Auto-deploys to `uat-ns`).
+3. **Hotfix:** `main` → `hotfix-branch`.
+4. **Hotfix Test:** `hotfix-branch` → **`dev-ns`** (using a unique Helm name/URL to avoid overwriting the `develop` branch deployment).
+5. **Hotfix Prod:** `hotfix-branch` → `main` (Deploys to `prod-ns`).
+6. **Hotfix Sync:** `hotfix-branch` → `develop` (Ensures the fix is in the next regular release).
+
+**A Quick Tip on Database Conflicts:** When testing a hotfix in the Dev namespace, ensure your Hotfix app points to the **Dev Database**. If the hotfix involves a database schema change, you must manually ensure that applying that change to the Dev DB won't break the `develop` branch features currently using it.
+
+Would you like me to show you the **Helm `values.yaml**` structure needed to support those "Side-by-Side" deployments in a single namespace?
+
+
+To support "Side-by-Side" deployments in a single Kubernetes namespace without creating new ones, your Helm chart must be flexible enough to vary the **Resource Names**, **Selectors**, and **Ingress Hosts**.
+
+If you don't vary these, the Hotfix deployment will simply overwrite your `develop` deployment because they share the same metadata names.
+
+### 1. The Helm `values.yaml` Structure
+
+You should design your `values.yaml` to accept a "suffix" or an "override" for the name. This allows multiple instances of the same app to coexist in the `dev` namespace.
+
+```yaml
+# Default values.yaml
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: my-app-repo
+  tag: latest
+
+ingress:
+  enabled: true
+  # The host will be dynamically set in CI/CD
+  host: dev-app.example.com 
+
+```
+
+### 2. The Deployment Template Logic
+
+In your Helm templates (e.g., `deployment.yaml`), ensure you are using `fullname` for your labels and selectors. This ensures the Service knows exactly which Pods belong to the Hotfix vs. the Dev build.
+
+```yaml
+# templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "my-app.fullname" . }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "my-app.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+# ... (rest of the spec)
+
+```
+
+---
+
+### 3. The GitLab CI/CD Job for Hotfix Testing
+
+This is the "magic" part. When you deploy the hotfix, you will use a different **Helm Release Name**. This tells Kubernetes: "Don't replace the 'dev-app', just add a new one called 'hotfix-123'."
+
+```yaml
+test_hotfix_in_dev_namespace:
+  stage: test
+  script:
+    - helm upgrade --install hotfix-$CI_COMMIT_REF_SLUG ./charts/my-app 
+      --namespace dev-namespace
+      --set fullnameOverride=hotfix-preview-$CI_COMMIT_REF_SLUG
+      --set ingress.host=hotfix-$CI_COMMIT_REF_SLUG.dev-env.example.com
+      --set image.tag=$CI_COMMIT_SHA
+  environment:
+    name: hotfix-review/$CI_COMMIT_REF_NAME
+    # This URL will appear in your GitLab MR for easy testing
+    url: https://hotfix-$CI_COMMIT_REF_SLUG.dev-env.example.com
+    on_stop: stop_hotfix_test
+  only:
+    - /^hotfix\/.*$/
+
+```
+
+---
+
+### 4. Handling Common Scenarios in this Setup
+
+#### **Commit Conflicts during Hotfix Sync**
+
+* **Situation:** You fixed a line in `main` (Hotfix). Someone else changed that same line in `develop` for a new feature.
+* **Resolution:** When you merge the Hotfix back into `develop`, GitLab will flag a conflict. You must resolve this in the **`develop`** branch. Always prioritize the Hotfix logic but adapt it to work with the new feature code.
+
+#### **Regression Issues in Fixed Namespaces**
+
+* **Scenario:** You deploy the Hotfix to the `dev` namespace, and it breaks the Dev database.
+* **Advice:** Since you are sharing the `dev-namespace`, the Hotfix will likely connect to the same Dev Database as the regular `develop` branch.
+* **If the hotfix requires a DB migration:** Be extremely careful. Applying a migration to the Dev DB might break the `develop` app.
+* **The Peer Review Fix:** In this case, ensure your DB migrations are **backward compatible**. The code should be able to run on the old schema and the new schema simultaneously.
+
+
+
+#### **Downgrading (Rollbacks)**
+
+* **In UAT/Prod:** If a release to `main` fails, use:
+`helm rollback <release-name> 0` (where 0 is the previous revision).
+* **In Git:** After the Helm rollback, perform a `git revert` on `main` to ensure the repository matches the live state.
+
+---
+
+### 5. Summary of Recommended Branching Flow
+
+| Step           | Branch                   | MR Target | K8s Action                                  |
+| -------------- | ------------------------ | --------- | ------------------------------------------- |
+| **1. Dev**     | `feature/X`              | `develop` | Deploys to `dev-ns` (Standard URL)          |
+| **2. UAT**     | `develop`                | `uat`     | Deploys to `uat-ns` (QA URL)                |
+| **3. Hotfix**  | `hotfix/Y` (from `main`) | `main`    | Deploys to `dev-ns` (**Unique Hotfix URL**) |
+| **4. Release** | `uat`                    | `main`    | Deploys to `prod-ns` (Production URL)       |
+| **5. Sync**    | `hotfix/Y`               | `develop` | No deploy; just merges fix into dev history |
+
+### Final Configuration Tip: Protected Branches
+
+Ensure that your `main` and `uat` branches are **Protected**.
+
+* **Settings > Repository > Protected Branches.**
+* **`main`**: No one allowed to push. Only Maintainers allowed to merge.
+* **Reason:** Since you don't have dynamic namespaces, a mistake on `main` is harder to isolate. Every change must be peer-reviewed and pass the pipeline before hitting the Prod namespace.
+
+Would you like me to help you write a **Post-Merge cleanup script** that automatically removes the "Side-by-Side" hotfix pods from the Dev namespace once the MR is closed?
+
+
+To manage parallel development while keeping **`main` as Production**, a "Promotion Flow" strategy is best. This ensures code moves forward through environments, but allows for "Emergency Lanes" (Hotfixes) to bypass pending features.
+
+---
+
+## 1. The Branching Architecture
+
+* **`main` (Production):** Protected. Mirror of what is live.
+* **`uat` (User Acceptance Testing):** Protected. Final staging for stakeholders.
+* **`develop` (Dev Environment):** The integration branch where all new features meet.
+* **`feature/*`:** Short-lived branches for individual tasks.
+* **`hotfix/*`:** Critical fixes branched directly from `main`.
+
+---
+
+## 2. Common Scenarios & MR Matrix
+
+| Scenario            | Checkout From | MR Target | K8s Namespace         | Action                                |
+| ------------------- | ------------- | --------- | --------------------- | ------------------------------------- |
+| **Feature Release** | `develop`     | `develop` | `dev-ns`              | Regular dev cycle.                    |
+| **UAT Promotion**   | `develop`     | `uat`     | `uat-ns`              | Moving tested features to QA.         |
+| **Prod Release**    | `uat`         | `main`    | `prod-ns`             | Final deployment to live.             |
+| **Prod Hotfix**     | `main`        | `main`    | `dev-ns` (Unique URL) | Bypasses `develop`/`uat` pollution.   |
+| **UAT Bugfix**      | `develop`     | `develop` | `dev-ns`              | Fixes found in UAT must start at Dev. |
+
+---
+
+## 3. The "Hotfix Contamination" Solution
+
+The biggest risk is accidentally including unreleased features from `develop` or `uat` into a critical Prod fix.
+
+**The Strategy:**
+
+1. **Isolate:** Branch `hotfix/emergency-fix` from **`main`**. (Since `main` is Prod, it only contains stable code).
+2. **Test in Dev Space:** Deploy this branch to your **Dev Namespace** using a unique Helm release name (e.g., `hotfix-app`). This allows you to test the fix using Dev resources without touching the `develop` branch code.
+3. **Deploy to Prod:** MR `hotfix/emergency-fix` → **`main`**.
+4. **Back-Port:** **Crucial Step.** MR `hotfix/emergency-fix` → **`develop`**. This ensures the fix is included in the next regular release and prevents "regression" where the bug reappears later.
+
+---
+
+## 4. Advanced Scenarios
+
+### Regression Issues
+
+If a feature works in Dev but fails in UAT:
+
+* **Do not** fix it on `uat`.
+* Create a bugfix branch from `develop`, fix it, merge to `develop`, then merge `develop` → `uat`. This keeps the history linear.
+
+### Downgrading / Rollbacks
+
+* **Git Level:** Use the **Revert** button in GitLab on the Merge Request. This creates a new commit that "undoes" the change.
+* **K8s Level:** Use `helm rollback <release-name>`. This is faster for immediate recovery while you sort out the Git history.
+
+### Commit Conflicts
+
+* **Situation:** You are merging `hotfix` → `develop`, but `develop` has changed significantly.
+* **Resolution:** Locally run `git checkout develop`, `git pull`, then `git merge hotfix/name`. Resolve conflicts in your IDE, commit, and push.
+
+---
+
+## 5. Protected Branches & GitLab Configuration
+
+Navigate to **Settings > Repository > Protected Branches**:
+
+| Branch        | Allowed to Push | Allowed to Merge | Configuration                            |
+| ------------- | --------------- | ---------------- | ---------------------------------------- |
+| **`main`**    | No one          | Maintainers Only | Require 2 approvals; Pipeline must pass. |
+| **`uat`**     | No one          | Maintainers/Devs | Require 1 approval (QA/Lead).            |
+| **`develop`** | No one          | Maintainers/Devs | Standard peer review required.           |
+
+---
+
+## 6. Preferred Approach: Tags + Environment Branches
+
+I recommend a **combination**:
+
+* **Environment Branches (`develop`, `uat`, `main`):** Used to trigger deployments to specific Kubernetes namespaces automatically.
+* **Git Tags:** Created **only** when merging to `main`.
+* *Why?* Tags provide immutable snapshots (e.g., `v1.2.0`). If you need to know exactly what was running 3 months ago, the tag tells you, even if the `main` branch has moved on.
+
+
+
+---
+
+## 7. GitLab CI/CD Pipeline Validation
+
+Your `.gitlab-ci.yml` should act as the "Gatekeeper":
+
+1. **Build Stage:** Runs for every branch.
+2. **Test Stage:** Runs unit tests and linting.
+3. **Deploy Dev:** Triggered automatically on `develop` or `hotfix/*`.
+4. **Deploy UAT:** Triggered only on `uat` branch.
+5. **Deploy Prod:** Triggered only on `main`. Requires a **manual click** in GitLab to prevent accidental deployments.
+
+```yaml
+# Example snippet for Hotfix isolation in K8s
+deploy_hotfix:
+  stage: deploy
+  script:
+    - helm upgrade --install hotfix-$CI_COMMIT_REF_SLUG ./chart 
+      --namespace dev-ns 
+      --set ingress.host=hotfix-$CI_COMMIT_REF_SLUG.example.com
+  only:
+    - /^hotfix\/.*$/
+
+```
+
+Would you like me to create a cleanup script that automatically deletes these "Side-by-Side" hotfix deployments from Kubernetes once the Merge Request is closed?
+
+
+To automate the lifecycle of your hotfixes and ensure your **Dev namespace** doesn't get cluttered with "ghost" deployments, you can use a GitLab CI/CD **cleanup job**.
+
+This script will trigger as soon as a Merge Request is **Merged** or **Closed**, sending a command to Kubernetes to delete the specific Helm release and its associated resources (Pods, Services, Ingress).
+
+### 1. The Cleanup Script (`.gitlab-ci.yml`)
+
+Add this job to your pipeline. It uses the `on_stop` keyword, which ties the deployment to the lifecycle of the GitLab Merge Request.
+
+```yaml
+stages:
+  - build
+  - test
+  - deploy
+  - cleanup
+
+# The deployment job we created earlier
+deploy_hotfix_test:
+  stage: deploy
+  script:
+    - helm upgrade --install hotfix-$CI_COMMIT_REF_SLUG ./charts/my-app 
+      --namespace dev-namespace
+      --set fullnameOverride=hotfix-$CI_COMMIT_REF_SLUG
+      --set ingress.host=hotfix-$CI_COMMIT_REF_SLUG.dev.example.com
+  environment:
+    name: review/$CI_COMMIT_REF_NAME
+    on_stop: stop_hotfix_deployment
+  only:
+    - /^hotfix\/.*$/
+
+# The cleanup job
+stop_hotfix_deployment:
+  stage: cleanup
+  variables:
+    GIT_STRATEGY: none # No need to pull code just to run a delete command
+  script:
+    - echo "Cleaning up Hotfix deployment hotfix-$CI_COMMIT_REF_SLUG"
+    - helm uninstall hotfix-$CI_COMMIT_REF_SLUG --namespace dev-namespace
+  when: manual
+  environment:
+    name: review/$CI_COMMIT_REF_NAME
+    action: stop
+  only:
+    - /^hotfix\/.*$/
+
+```
+
+---
+
+### 2. How the Lifecycle Works in Practice
+
+1. **Open MR:** You create a `hotfix/fix-login` branch. GitLab triggers `deploy_hotfix_test`.
+2. **Test:** You visit `hotfix-fix-login.dev.example.com` to verify.
+3. **Merge:** You merge the hotfix into `main`.
+4. **Auto-Cleanup:** GitLab automatically triggers the `stop_hotfix_deployment` job. Kubernetes deletes the Pods and the Ingress. Your Dev namespace is clean again.
+
+---
+
+### 3. Final Strategic Advice for this Setup
+
+* **Avoid Database Contamination:** Since the hotfix is running in the `dev-namespace`, it is likely sharing the **Dev Database**. If your hotfix involves a schema change (DB migration), be careful. Applying it will affect the `develop` branch app too.
+* *Solution:* Always write "Add-only" migrations or ensure your code is backward compatible.
+
+
+* **The "Double Merge" Rule:** Always remember that once the Hotfix is in `main`, you **must** merge `main` back into `develop`. If you don't, the next time you release from `develop` to `main`, you might accidentally overwrite the fix with the old, broken code.
+* **Pipeline Validation:** In your `main` branch settings, enable **"Pipelines must succeed"** before merging. This ensures no one can merge a hotfix that hasn't at least passed its basic build and unit tests.
+
+### 4. Summary of Protection Settings
+
+* **Main (Prod):** Maintainers Only. No force push. No direct push.
+* **UAT:** Maintainers + Developers. No direct push (MR only).
+* **Develop:** Developers. No direct push (encourages code review).
+
+This setup gives you the perfect balance: **Safety** (Protected `main`), **Speed** (Automatic `develop` builds), and **Isolation** (Side-by-side hotfixes in K8s).
+
+Would you like me to help you draft a **README** section for your developers that explains these "Golden Rules" of your new branching strategy?
+
+
+
+
+
+====================p============================
+
+# GitLab Branching Strategy: Dev → UAT → Prod
+
+This strategy uses **GitLab Flow with environment branches** adapted for your 3-env setup, supporting parallel development while isolating production hotfixes from unreleased features.
+
+## Core Branch Structure
+```
+main          → Production (protected)
+uat           → UAT-ready (protected)
+develop       → Dev integration (protected)
+feature/*     → New features
+hotfix/*      → Bug fixes (env-specific)
+release/*     → Version stabilization
+```
+
+## Protected Branch Configuration
+| Branch    | Push Rules        | Merge Rules                          | Delete Rules |
+| --------- | ----------------- | ------------------------------------ | ------------ |
+| `main`    | Admins only       | MR required, 2 approvals, passing CI | Protected    |
+| `uat`     | Developers/Admins | MR required, 1 approval, passing CI  | Protected    |
+| `develop` | Developers        | MR required, passing CI              | Protected    |
+
+**Setup**: GitLab → Settings → Repository → Protected Branches
+
+***
+
+## Development & Release Scenarios
+
+### 1. Regular Feature Development
+```
+Checkout: git checkout -b feature/user-auth develop
+Commits → MR: feature/user-auth → develop
+Deploy: develop → Dev environment
+```
+**Parallel**: Multiple features work simultaneously on `develop`.
+
+### 2. Hotfixes by Environment
+| Environment | Checkout From | MR Target                        | Deploy |
+| ----------- | ------------- | -------------------------------- | ------ |
+| **Prod**    | `main`        | `hotfix/prod-bug-123 → main`     | Prod   |
+| **UAT**     | `uat`         | `hotfix/uat-bug-456 → uat`       | UAT    |
+| **Dev**     | `develop`     | `hotfix/dev-issue-789 → develop` | Dev    |
+
+**Key**: Hotfixes never pull in unreleased features from `develop`.
+
+### 3. Release Workflow (No Feature Contamination)
+```
+1. git checkout -b release/v2.1.0 develop
+2. Stabilize → Test → MR: release/v2.1.0 → uat
+3. UAT approved → Tag: v2.1.0-uat
+4. MR: uat → main → Tag: v2.1.0
+```
+**Protection**: Release branch isolates from ongoing `develop` changes.
+
+### 4. Production Deployment
+```
+MR: uat → main (2 approvals)
+Tag: v2.1.0-prod
+Deploy: main → Prod
+```
+
+### 5. Regression Fixes
+```
+UAT regression: git checkout -b hotfix/regression-001 uat
+MR: hotfix/regression-001 → uat
+Deploy UAT → Retest
+```
+
+### 6. Downgrade Release
+```
+Scenario: Prod needs v2.0.5 instead of v2.1.0
+git checkout -b release/v2.0.5 main
+git reset --hard v2.0.5
+MR: release/v2.0.5 → main (tag: v2.0.5-downgrade)
+```
+
+### 7. Commit Conflicts & Resolutions
+| Scenario          | Resolution Strategy                            |
+| ----------------- | ---------------------------------------------- |
+| Feature → develop | Resolve in GitLab MR editor                    |
+| Hotfix → main     | Cherry-pick: `git cherry-pick <commit>`        |
+| Release stale     | Rebase: `git rebase develop` on release branch |
+| UAT → Prod        | Fast-forward merge (no conflicts)              |
+| Parallel features | Developers coordinate via GitLab issues        |
+
+***
+
+## Checkout Reference
+| Scenario     | Source Branch |
+| ------------ | ------------- |
+| New feature  | `develop`     |
+| Dev hotfix   | `develop`     |
+| UAT hotfix   | `uat`         |
+| Prod hotfix  | `main`        |
+| UAT release  | `develop`     |
+| Prod release | `uat`         |
+| Downgrade    | `main`        |
+
+## Merge Request Patterns
+```
+Source → Target
+==========
+feature/* → develop
+hotfix/dev-* → develop
+release/* → uat
+uat → main
+hotfix/uat-* → uat
+hotfix/prod-* → main
+```
+
+***
+
+## Git Tags vs Release Branches
+
+### Recommendation: **Hybrid Approach**
+```
+UAT: Release branches (stabilization)
+Prod: Git tags (immutable releases)
+```
+
+| Approach                 | UAT/Lower Env                 | Production             |
+| ------------------------ | ----------------------------- | ---------------------- |
+| **Git Tags**             | ❌ Can't fix post-tag          | ✅ Use tags             |
+| **Release Branches**     | ✅ Stabilization cycles        | ❌ Avoid (branch bloat) |
+| **Hybrid (Recommended)** | Release branch → Tag on merge | Tag only               |
+
+**Flow**:
+```
+develop → release/v2.1.0 → uat (tag v2.1.0-uat)
+uat → main (tag v2.1.0-prod)
+```
+
+***
+
+## GitLab CI/CD Pipeline
+
+```yaml
+stages:
+  - test
+  - deploy-dev
+  - deploy-uat
+  - deploy-prod
+
+# Dev: develop branch
+deploy-dev:
+  stage: deploy-dev
+  script: echo "Deploy to Dev"
+  rules:
+    - if: $CI_COMMIT_BRANCH == "develop"
+
+# UAT: release/* and uat
+deploy-uat:
+  stage: deploy-uat
+  script: echo "Deploy to UAT"
+  rules:
+    - if: $CI_COMMIT_REF_NAME =~ /^release\/.*/
+    - if: $CI_COMMIT_BRANCH == "uat"
+
+# Prod: main only
+deploy-prod:
+  stage: deploy-prod
+  script: echo "Deploy to Production"
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      when: manual  # Manual approval
+```
+
+### Pipeline Validation [stackoverflow](https://stackoverflow.com/questions/49090675/how-can-i-test-gitlab-ci-yml)
+1. **CI Lint**: CI/CD → CI Lint → Validate `.gitlab-ci.yml`
+2. **Pipeline Editor**: Build → Pipeline Editor → Full validation
+3. **VS Code**: GitLab Workflow extension
+
+***
+
+## Implementation Checklist
+- [ ] Create `develop`, `uat`, `main` (protected)
+- [ ] Set branch protection rules
+- [ ] Configure CI/CD pipeline
+- [ ] Test feature → develop → release → uat → main flow
+- [ ] Test hotfix from `main` (no dev features)
+- [ ] Validate pipeline with CI Lint tool [docs.gitlab](https://docs.gitlab.com/ci/yaml/lint/)
+
+This strategy prevents **unreleased features from reaching production hotfixes** while supporting parallel development across all environments.
+
+==================d========================
+
+
+# GitLab Branching Strategy for Dev/UAT/Prod Environments
+
+## Branching Model (Modified GitFlow)
+
+**Main Branches:**
+- `main` - Production code (always deployable)
+- `uat` - UAT/Staging environment
+- `dev` - Development/Integration environment
+
+**Supporting Branches:**
+- `feature/*` - New features
+- `release/*` - Release preparation
+- `hotfix/*` - Production fixes
+
+## Environment Mapping & Branch Protection
+
+| Branch | Environment | Protected? | Merge Permissions | Pipeline Triggers |
+| ------ | ----------- | ---------- | ----------------- | ----------------- |
+| `main` | Production  | Yes        | Maintainers only  | On merge/tag      |
+| `uat`  | UAT/Staging | Yes        | Developers+       | On merge          |
+| `dev`  | Development | Yes        | All developers    | On push           |
+
+**Protection Configuration:**
+- **main**: Require MR, 2+ approvals, pipeline success, no force push
+- **uat**: Require MR, 1+ approval, pipeline success, no force push  
+- **dev**: Require MR, pipeline success, allow maintainer force push
+
+## Scenarios & Workflows
+
+### 1. Regular Feature Releases
+**Source Branch:** `dev`
+**Target Branch:** `feature/JIRA-123`
+**MR Flow:** `feature/*` → `dev` → `uat` → `main`
+
+```
+# Development Phase
+git checkout dev
+git pull origin dev
+git checkout -b feature/JIRA-123
+# Work on feature
+git push origin feature/JIRA-123
+
+# Create MR: feature/JIRA-123 → dev
+# After approval & pipeline success, merge to dev
+
+# Release Phase
+git checkout dev
+git pull origin dev
+git checkout -b release/v1.2.0
+# Finalize release (update version, docs)
+git push origin release/v1.2.0
+
+# Create MR: release/v1.2.0 → uat
+# After UAT approval, MR: uat → main
+# Tag main: git tag -a v1.2.0 -m "Release v1.2.0"
+```
+
+### 2. Hotfixes for Production
+**Goal:** Fix production without unreleased features
+
+**Approach 1 (Recommended):**
+```
+# From production tag/commit
+git checkout -b hotfix/critical-issue v1.1.0
+# Fix the issue
+git push origin hotfix/critical-issue
+
+# MR flow: hotfix/* → main → uat → dev
+# 1. Create MR: hotfix/* → main (bypass uat for speed if critical)
+# 2. After merge to main, cherry-pick to uat: git cherry-pick <hash>
+# 3. Merge main to dev (or cherry-pick if conflicts)
+```
+
+**Approach 2 (Via Hotfix Branch):**
+```
+git checkout main
+git checkout -b hotfix/critical-issue
+# Fix issue
+git push origin hotfix/critical-issue
+
+# Sequential MRs:
+# hotfix/* → main (tag as v1.1.1)
+# main → uat (cherry-pick or merge)
+# main → dev (rebase feature branches if needed)
+```
+
+### 3. Bug Fixes for UAT/Dev
+**UAT Bug Fix:**
+```
+# From uat branch
+git checkout uat
+git pull origin uat
+git checkout -b fix/uat-issue
+# Fix issue
+git push origin fix/uat-issue
+
+# MR: fix/uat-issue → uat
+# After merge, cherry-pick to dev if needed
+```
+
+**Dev Bug Fix:**
+```
+git checkout dev
+git checkout -b fix/dev-issue
+# Fix issue
+git push origin fix/dev-issue
+# MR: fix/dev-issue → dev
+```
+
+### 4. Production Deployments
+**Recommended:** Git Tags for Production
+```
+# After MR to main
+git checkout main
+git pull origin main
+git tag -a v1.2.0 -m "Release v1.2.0"
+git push origin v1.2.0
+
+# CI/CD triggers on tags
+# Deploy v1.2.0 to production
+```
+
+### 5. Handling Regression Issues
+**Scenario:** Bug found after UAT/production deployment
+
+1. **Create hotfix branch from affected version**
+2. **Test in isolated environment**
+3. **Follow hotfix workflow**
+4. **Add regression test to prevent recurrence**
+5. **Update automated tests in dev**
+
+### 6. Downgrading/Rollbacks
+```
+# Identify good version
+git checkout v1.1.0
+git checkout -b rollback/v1.1.0
+# Create MR: rollback/* → main
+# Tag as v1.2.1 (rollback version)
+
+# Alternative: Revert merge commit
+git revert -m 1 <merge-commit-hash>
+# Creates new commit undoing changes
+```
+
+### 7. Commit Conflict Resolution
+
+**Common Scenarios:**
+
+**A. Feature Branch Conflicts with Dev:**
+```
+git checkout feature/JIRA-123
+git fetch origin
+git rebase origin/dev
+# Resolve conflicts, then force push
+git push origin feature/JIRA-123 --force-with-lease
+```
+
+**B. Hotfix Conflicts with UAT/Dev:**
+```
+# Resolve in hotfix branch first
+git checkout hotfix/issue
+git merge origin/uat
+# Resolve conflicts, then continue MR flow
+```
+
+**C. Long-running Feature Branch:**
+- Regularly rebase on dev: `git rebase origin/dev`
+- Use feature toggles to avoid merge conflicts
+- Break large features into smaller MRs
+
+### 8. Release Management Strategy
+
+**Preferred:** **Git Tags + Release Branches**
+- **Release branches** for stabilization/UAT phase
+- **Git tags** for production deployments
+- **Release branches deleted** after merge to main
+
+**Example Release Process:**
+```
+# Create release branch
+git checkout -b release/v1.2.0 dev
+
+# UAT testing phase
+# Fix bugs directly in release branch
+
+# Merge to main and tag
+git checkout main
+git merge --no-ff release/v1.2.0
+git tag -a v1.2.0 -m "Release v1.2.0"
+
+# Sync back to dev
+git checkout dev
+git merge main
+# Or rebase dev on main if preferred
+```
+
+### 9. GitLab CI/CD Pipeline Validation
+
+**.gitlab-ci.yml Structure:**
+```yaml
+stages:
+  - validate
+  - test
+  - build
+  - deploy-dev
+  - deploy-uat
+  - deploy-prod
+
+variables:
+  DOCKER_IMAGE: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+
+# Branch-specific rules
+workflow:
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      variables:
+        DEPLOY_ENV: "prod"
+    - if: $CI_COMMIT_BRANCH == "uat"
+      variables:
+        DEPLOY_ENV: "uat"
+    - if: $CI_COMMIT_BRANCH == "dev"
+      variables:
+        DEPLOY_ENV: "dev"
+    - if: $CI_COMMIT_BRANCH =~ /^feature\/.*/
+      variables:
+        DEPLOY_ENV: "feature"
+    - if: $CI_COMMIT_BRANCH =~ /^hotfix\/.*/
+      variables:
+        DEPLOY_ENV: "hotfix"
+    - if: $CI_COMMIT_TAG
+      variables:
+        DEPLOY_ENV: "prod"
+
+# Validation jobs
+validate:
+  stage: validate
+  script:
+    - echo "Running linting, security scans, etc."
+  rules:
+    - if: $CI_MERGE_REQUEST_ID
+
+# Environment-specific deployment
+deploy:prod:
+  stage: deploy-prod
+  script:
+    - echo "Deploying to production"
+    - ./deploy.sh prod
+  rules:
+    - if: $CI_COMMIT_TAG
+      when: manual
+    - if: $CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE == "merge_request_event"
+      when: manual
+
+deploy:uat:
+  stage: deploy-uat
+  script:
+    - echo "Deploying to UAT"
+    - ./deploy.sh uat
+  rules:
+    - if: $CI_COMMIT_BRANCH == "uat"
+    - if: $CI_COMMIT_BRANCH =~ /^release\/.*/
+
+# MR Pipeline - more stringent checks
+include:
+  - template: Security/SAST.gitlab-ci.yml
+  - template: Security/Dependency-Scanning.gitlab-ci.yml
+  
+merge_request_tests:
+  stage: test
+  script:
+    - echo "Running MR-specific tests"
+    - npm test -- --coverage
+    - sonar-scanner
+  rules:
+    - if: $CI_MERGE_REQUEST_ID
+```
+
+### 10. Recommended Checklist for MRs
+
+**Before Merging to Dev:**
+- [ ] Code reviewed by at least 1 developer
+- [ ] Unit tests pass
+- [ ] Integration tests pass
+- [ ] No security issues (SAST/DAST)
+- [ ] Documentation updated
+- [ ] Feature flag added if needed
+
+**Before Merging to UAT:**
+- [ ] All dev MRs for release merged
+- [ ] Release branch created
+- [ ] Version bumped
+- [ ] Changelog updated
+- [ ] UAT deployment tested
+
+**Before Merging to Main:**
+- [ ] UAT sign-off received
+- [ ] Performance tests pass
+- [ ] Rollback plan documented
+- [ ] Production deployment verified
+
+### 11. Emergency Procedures
+
+**Critical Hotfix (Bypass UAT):**
+1. Create hotfix branch from production tag
+2. MR with "Skip UAT" label (requires 2 maintainer approvals)
+3. Deploy to production with feature flag
+4. Post-deploy: Merge to uat/dev for testing
+5. Remove feature flag after verification
+
+**Rollback Procedure:**
+1. Identify rollback commit/tag
+2. Create rollback MR with emergency approval
+3. Deploy previous version
+4. Root cause analysis in separate branch
+
+### 12. Monitoring & Metrics
+
+**Track in GitLab:**
+- MR cycle time
+- Deployment frequency
+- Lead time for changes
+- Change failure rate
+- Mean time to recovery
+
+**Dashboards:**
+- Branch health (staleness, CI status)
+- Release pipeline status
+- Environment parity (dev vs uat vs prod)
+
+This strategy balances safety with agility, supports parallel development, and provides clear paths for handling emergencies while maintaining code quality across all environments.
+
+
+====================c====================
+
+Got it — this is a classic (and very real) problem space. I’ll give you a **battle-tested GitLab branching strategy** that supports **parallel development**, **clean hotfixes**, and **safe promotions across Dev → UAT → Prod**, without feature leakage.
+
+I’ll assume:
+
+* **Prod branch = `main`**
+* GitLab CI/CD
+* Teams doing concurrent feature work + emergency hotfixes
+
+---
+
+## Recommended High-Level Strategy
+
+**Model:** *GitFlow-inspired with environment branches*
+**Branches:**
+
+```
+main        → Production (Prod)
+uat         → Pre-production (UAT)
+develop     → Integration (Dev)
+feature/*   → Feature development
+hotfix/*    → Emergency fixes
+release/*   → Optional, for stabilization
+```
+
+### Environment Mapping
+
+| Environment | Branch    | Purpose                   |
+| ----------- | --------- | ------------------------- |
+| Dev         | `develop` | Ongoing integration       |
+| UAT         | `uat`     | Release candidate testing |
+| Prod        | `main`    | Live production           |
+
+---
+
+## 1. Regular Feature Releases
+
+### Flow
+
+```
+feature/* → develop → uat → main
+```
+
+### Steps
+
+1. **Create feature branch**
+
+   ```bash
+   git checkout develop
+   git checkout -b feature/payment-refactor
+   ```
+
+2. **Merge to develop**
+
+   * MR: `feature/*` → `develop`
+   * Squash recommended
+
+3. **Promote to UAT**
+
+   * MR: `develop` → `uat`
+   * Trigger UAT pipeline
+
+4. **Release to Prod**
+
+   * MR: `uat` → `main`
+   * Tag release (e.g., `v1.8.0`)
+
+### Why this works
+
+* Dev stays messy
+* UAT stays controlled
+* Prod only gets tested code
+
+---
+
+## 2. Hotfixes & Bug Fixes (Prod / UAT / Dev)
+
+### A. Production Hotfix (Critical)
+
+**Golden rule:**
+👉 **Hotfix always starts from `main`**
+
+```
+main → hotfix/* → main → uat → develop
+```
+
+#### Steps
+
+```bash
+git checkout main
+git checkout -b hotfix/login-null-pointer
+```
+
+1. Fix bug
+2. MR: `hotfix/*` → `main`
+3. Tag release (`v1.8.1`)
+4. **Back-merge**
+
+   * `main` → `uat`
+   * `main` → `develop`
+
+✔ Prevents unreleased Dev features from leaking into Prod
+
+---
+
+### B. UAT Bug Fix (Not in Prod yet)
+
+```
+uat → hotfix/* → uat → develop
+```
+
+* If the bug **does not exist in Prod**, do **not** touch `main`
+* Later included in next Prod release
+
+---
+
+### C. Dev-Only Bug Fix
+
+```
+feature/* or bugfix/* → develop
+```
+
+* Never promote directly to UAT unless part of a release
+
+---
+
+## 3. Deploy Without Contaminating Prod Hotfixes
+
+### The Problem
+
+Dev/UAT contain unfinished features
+Prod needs **only the fix**
+
+### The Rule
+
+✅ **Hotfix branches must always originate from `main`**
+
+❌ Never cherry-pick from `develop` into `main`
+
+### Visual
+
+```
+BAD:
+develop ──fix──► main  ❌ (leaks features)
+
+GOOD:
+main ──fix──► hotfix ──► main ✔
+```
+
+---
+
+## 4. Production Deployments
+
+### Recommended Flow
+
+```
+uat → main → tag → deploy
+```
+
+### Steps
+
+1. Final MR: `uat` → `main`
+2. Tag:
+
+   ```bash
+   git tag -a v1.9.0 -m "Release v1.9.0"
+   git push origin v1.9.0
+   ```
+3. GitLab CI:
+
+   * Build
+   * Run prod smoke tests
+   * Deploy
+
+---
+
+## 5. Regression Issues
+
+### Scenario
+
+A feature breaks existing functionality in UAT or Prod.
+
+### Strategy
+
+#### Found in UAT
+
+* Fix on `uat` or `hotfix/*`
+* Merge back to `develop`
+
+#### Found in Prod
+
+* Create `hotfix/*` from `main`
+* Patch → release → back-merge
+
+### Tip
+
+Enable:
+
+* Automated regression tests on `uat`
+* Smoke tests on `main`
+
+---
+
+## 6. Downgrading / Releasing a Lower Version
+
+### Best Approach: **Tags**
+
+```bash
+git checkout v1.7.2
+git checkout -b release/v1.7-maintenance
+```
+
+Use this when:
+
+* Rolling back Prod
+* Supporting LTS versions
+
+Avoid force-resetting `main` unless absolutely necessary.
+
+---
+
+## 7. Commit Conflicts (Situations & Resolutions)
+
+### Common Conflict Scenarios
+
+| Situation          | Cause               | Resolution                  |
+| ------------------ | ------------------- | --------------------------- |
+| Feature vs feature | Parallel changes    | Rebase feature on `develop` |
+| Hotfix vs feature  | Hotfix merged first | Back-merge `main`           |
+| UAT conflicts      | Divergent fixes     | Resolve in `uat`, then sync |
+
+### Best Practices
+
+* Rebase feature branches frequently
+* Resolve conflicts **before** MR
+* Keep MRs small
+
+---
+
+## 8. Recommended Source Branch per Scenario
+
+| Scenario              | Checkout From |
+| --------------------- | ------------- |
+| New feature           | `develop`     |
+| Prod hotfix           | `main`        |
+| UAT hotfix            | `uat`         |
+| Bug fix (Dev)         | `develop`     |
+| Release stabilization | `release/*`   |
+
+---
+
+## 9. Merge Request (MR) Matrix
+
+| Source    | Target  | Use Case            |
+| --------- | ------- | ------------------- |
+| feature/* | develop | Feature development |
+| develop   | uat     | Release candidate   |
+| uat       | main    | Production release  |
+| hotfix/*  | main    | Emergency fix       |
+| main      | develop | Sync after hotfix   |
+| main      | uat     | Sync after hotfix   |
+
+---
+
+## 10. Protected Branches (Very Important)
+
+### Protect These Branches
+
+| Branch      | Who Can Push | Who Can Merge |
+| ----------- | ------------ | ------------- |
+| `main`      | ❌ No one     | Maintainers   |
+| `uat`       | ❌ No one     | Maintainers   |
+| `develop`   | ❌ No one     | Developers    |
+| `release/*` | ❌ No one     | Maintainers   |
+
+### Enforce
+
+* MR approvals (min 1–2)
+* Passing pipeline required
+* No force push
+* No direct commits
+
+---
+
+## 11. Tags vs Release Branches
+
+### Recommended: **Combination**
+
+| Use Case          | Tool                 |
+| ----------------- | -------------------- |
+| Official releases | Git tags             |
+| Stabilization     | `release/*`          |
+| Long-term support | Maintenance branches |
+
+**Example**
+
+```
+release/v1.9.0 → main → tag v1.9.0
+```
+
+---
+
+## 12. GitLab CI/CD Pipeline Validation
+
+### Pipeline per Branch
+
+| Branch    | CI Actions                   |
+| --------- | ---------------------------- |
+| feature/* | Build + unit tests           |
+| develop   | Build + unit + integration   |
+| uat       | Full test suite + deploy UAT |
+| main      | Smoke tests + deploy Prod    |
+
+### Guardrails
+
+* Required pipeline success for MR
+* Environment-specific variables
+* Manual approval for Prod deploy
+
+---
+
+## TL;DR (Rules That Save Teams)
+
+* **Hotfixes always start from `main`**
+* **Never merge `develop` directly to Prod**
+* **Protect `main`, `uat`, `develop`**
+* **Use tags for releases**
+* **Back-merge after hotfixes**
+
+---
+
+If you want, I can:
+
+* Draw this as a **branching diagram**
+* Provide **GitLab CI YAML examples**
+* Tailor this for **microservices** or **trunk-based hybrid**
+
+Just tell me 👍
+
+
+Perfect — let’s make this **concrete and reusable**.
+I’ll do this in **three clean sections** so you can lift pieces straight into docs or onboarding.
+
+---
+
+# 1️⃣ Branching Diagram (Dev / UAT / Prod with Hotfixes)
+
+## Full Lifecycle Diagram
+
+```
+                         ┌───────────────────┐
+                         │    feature/*      │
+                         │  (short-lived)    │
+                         └─────────┬─────────┘
+                                   │ MR
+                                   ▼
+                         ┌───────────────────┐
+                         │     develop       │
+                         │ (Dev environment) │
+                         └─────────┬─────────┘
+                                   │ MR (release candidate)
+                                   ▼
+                         ┌───────────────────┐
+                         │       uat         │
+                         │ (UAT environment) │
+                         └─────────┬─────────┘
+                                   │ MR (approved release)
+                                   ▼
+                         ┌───────────────────┐
+                         │      main         │
+                         │ (Production)      │
+                         └─────────┬─────────┘
+                                   │
+                                 Tag vX.Y.Z
+                                   │
+                                Deploy Prod
+```
+
+---
+
+## Hotfix Flow (Critical Prod Issue)
+
+```
+           ┌───────────────────┐
+           │      main         │
+           └─────────┬─────────┘
+                     │
+              checkout hotfix/*
+                     │
+           ┌───────────────────┐
+           │   hotfix/issue    │
+           └─────────┬─────────┘
+                     │ MR
+         ┌───────────┴───────────┐
+         ▼                       ▼
+┌───────────────────┐   ┌───────────────────┐
+│       main        │   │        uat        │
+└─────────┬─────────┘   └─────────┬─────────┘
+          │                         │
+          └──────────────┬──────────┘
+                         ▼
+                 ┌───────────────────┐
+                 │     develop       │
+                 └───────────────────┘
+```
+
+**Why this is critical:**
+Prod hotfixes never touch unreleased Dev/UAT features.
+
+---
+
+# 2️⃣ GitLab CI/CD YAML Examples
+
+Below is a **practical, environment-aware pipeline** that enforces safety.
+
+---
+
+## `.gitlab-ci.yml` (Core Structure)
+
+```yaml
+stages:
+  - build
+  - test
+  - deploy
+
+default:
+  image: node:18
+  cache:
+    key: ${CI_COMMIT_REF_SLUG}
+    paths:
+      - node_modules/
+
+variables:
+  APP_NAME: my-app
+```
+
+---
+
+## Feature Branch Pipeline
+
+```yaml
+feature_build_test:
+  stage: test
+  rules:
+    - if: '$CI_COMMIT_BRANCH =~ /^feature\/.*$/'
+  script:
+    - npm ci
+    - npm run lint
+    - npm run test
+```
+
+✔ Fast feedback
+✔ No deployments
+
+---
+
+## Develop (Dev Environment)
+
+```yaml
+deploy_dev:
+  stage: deploy
+  environment:
+    name: dev
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "develop"'
+  script:
+    - npm ci
+    - npm run build
+    - ./deploy.sh dev
+```
+
+---
+
+## UAT Pipeline (Gatekeeper)
+
+```yaml
+uat_tests_and_deploy:
+  stage: deploy
+  environment:
+    name: uat
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "uat"'
+  script:
+    - npm ci
+    - npm run build
+    - npm run test:integration
+    - ./deploy.sh uat
+```
+
+✔ Full regression
+✔ Mirrors Prod config
+
+---
+
+## Production Deployment (Manual Approval)
+
+```yaml
+deploy_prod:
+  stage: deploy
+  environment:
+    name: prod
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  when: manual
+  allow_failure: false
+  script:
+    - npm ci
+    - npm run build
+    - npm run test:smoke
+    - ./deploy.sh prod
+```
+
+✔ Manual approval
+✔ Smoke tests only
+✔ Protected branch
+
+---
+
+## Tag-Based Release Pipeline (Optional but Recommended)
+
+```yaml
+deploy_prod_tag:
+  stage: deploy
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/'
+  script:
+    - echo "Deploying tagged release $CI_COMMIT_TAG"
+    - ./deploy.sh prod
+```
+
+---
+
+# 3️⃣ Tailoring for Microservices & Trunk-Based Hybrid
+
+This is where teams usually struggle — here’s the clean version.
+
+---
+
+## A. Microservices Strategy (Recommended)
+
+### Repo Options
+
+### ✅ Option 1: **One Repo per Service (Best)**
+
+Each service follows **same branching rules**:
+
+```
+service-a/
+service-b/
+service-c/
+```
+
+Each repo has:
+
+* `main`
+* `uat`
+* `develop`
+
+**Benefits**
+
+* Independent releases
+* Faster pipelines
+* Less merge hell
+
+---
+
+### Option 2: Monorepo (Still Works)
+
+```
+/services
+  /billing
+  /auth
+  /orders
+```
+
+Use **path-based CI rules**:
+
+```yaml
+rules:
+  - changes:
+      - services/billing/**
+```
+
+---
+
+## B. Trunk-Based Hybrid Model
+
+This is ideal for **high-velocity teams**.
+
+### Branches
+
+```
+main (trunk)
+feature/* (very short-lived)
+release/* (optional)
+```
+
+### Environment Mapping
+
+| Env  | Source     |
+| ---- | ---------- |
+| Dev  | main       |
+| UAT  | release/*  |
+| Prod | main + tag |
+
+---
+
+### Trunk Hybrid Diagram
+
+```
+feature/* ──► main ──► tag ──► prod
+                    │
+                    └──► release/* ──► uat
+```
+
+### Rules
+
+* Feature branches live **hours or days**
+* Heavy use of:
+
+  * Feature flags
+  * Canary releases
+* No long-lived `develop`
+
+---
+
+### When to Use Which Model
+
+| Team Size         | Model                         |
+| ----------------- | ----------------------------- |
+| Small, high trust | Trunk-based                   |
+| Medium            | Hybrid                        |
+| Large / regulated | GitFlow-style (earlier model) |
+
+---
+
+## CI Adjustments for Trunk-Based
+
+```yaml
+deploy_dev:
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+```
+
+UAT only comes from `release/*`.
+
+---
+
+# Final Recommendation (Pragmatic)
+
+**If you want safety + speed:**
+
+* Start with **GitFlow-style (develop / uat / main)**
+* Enforce:
+
+  * Protected branches
+  * Mandatory pipelines
+* As maturity grows:
+
+  * Shorten feature branches
+  * Move toward **trunk-based hybrid**
+
+---
+
+If you want next:
+
+* 🧠 **Decision tree** for “which branch do I use?”
+* 📋 **One-page team policy**
+* 🧪 **Feature-flag strategy to support trunk-based**
+* 🔐 **Exact GitLab protected-branch settings (screenshots-style)**
+
+Just tell me where you want to go next.
+
+Love this — these three artifacts together are what actually **keep teams from breaking prod at 2 AM**. I’ll keep everything **copy-paste ready** and opinionated.
+
+---
+
+# 🧠 1) Decision Tree — “Which Branch Do I Use?”
+
+Use this **every time you start work**.
+
+```
+START
+ │
+ │ Is this a NEW FEATURE?
+ ├─ YES ─► Is trunk-based?
+ │         ├─ YES → feature/* from main (short-lived)
+ │         └─ NO  → feature/* from develop
+ │
+ └─ NO
+    │
+    │ Is PROD broken right now?
+    ├─ YES ─► hotfix/* from main
+    │
+    └─ NO
+       │
+       │ Is it a BUG in UAT only?
+       ├─ YES ─► hotfix/* from uat
+       │
+       └─ NO
+          │
+          │ Is it a DEV-only issue?
+          ├─ YES ─► feature/* or bugfix/* from develop
+          │
+          └─ NO
+             │
+             │ Are we stabilizing for release?
+             ├─ YES ─► release/* from develop
+             │
+             └─ NO → Ask the tech lead 😄
+```
+
+---
+
+## Quick Reference Table
+
+| Situation                    | Branch to Create From       |
+| ---------------------------- | --------------------------- |
+| New feature                  | `develop` or `main` (trunk) |
+| Prod outage                  | `main`                      |
+| UAT defect                   | `uat`                       |
+| Dev defect                   | `develop`                   |
+| Release stabilization        | `develop`                   |
+| Rollback / patch old version | Git tag                     |
+
+---
+
+# 📋 2) One-Page Team Branching Policy
+
+> **Title:** Git Branching & Release Policy
+> **Applies to:** All engineers
+> **Goal:** Safe releases, fast development, zero feature leakage
+
+---
+
+## Branch Types & Purpose
+
+| Branch      | Purpose           | Deploys To |
+| ----------- | ----------------- | ---------- |
+| `main`      | Production        | Prod       |
+| `uat`       | Release candidate | UAT        |
+| `develop`   | Integration       | Dev        |
+| `feature/*` | Feature work      | None       |
+| `hotfix/*`  | Emergency fixes   | Prod       |
+| `release/*` | Stabilization     | UAT        |
+
+---
+
+## Golden Rules (Non-Negotiable)
+
+1. **No direct commits to `main`, `uat`, `develop`**
+2. **Hotfixes always start from `main`**
+3. **Prod is deployed only from `main` or tags**
+4. **Every merge requires a green pipeline**
+5. **Back-merge after hotfixes**
+
+---
+
+## Merge Request Rules
+
+| Source      | Target           |
+| ----------- | ---------------- |
+| `feature/*` | `develop`        |
+| `develop`   | `uat`            |
+| `uat`       | `main`           |
+| `hotfix/*`  | `main`           |
+| `main`      | `develop`, `uat` |
+
+---
+
+## Protected Branch Configuration
+
+* **Protected branches:** `main`, `uat`, `develop`
+* **Approvals:** 1–2 mandatory
+* **Pipelines:** must pass
+* **Force push:** disabled
+* **Deploy jobs:** manual for Prod
+
+---
+
+## Release Process
+
+1. Merge `develop` → `uat`
+2. UAT testing & sign-off
+3. Merge `uat` → `main`
+4. Tag release `vX.Y.Z`
+5. Deploy to Prod
+
+---
+
+## Hotfix Process
+
+1. Create `hotfix/*` from `main`
+2. Fix + MR to `main`
+3. Tag patch release
+4. Back-merge to `uat` & `develop`
+
+---
+
+## Definition of Done
+
+* Tests pass
+* Feature flag enabled if incomplete
+* MR approved
+* No direct pushes to protected branches
+
+---
+
+# 🧪 3) Feature-Flag Strategy (Trunk-Based Friendly)
+
+This is what makes **trunk-based actually safe**.
+
+---
+
+## Core Principles
+
+✅ Merge incomplete code
+✅ Deploy continuously
+❌ Release unfinished behavior
+
+---
+
+## Flag Types (Use All Three)
+
+### 1️⃣ Release Flags (Most Common)
+
+Used to hide incomplete features.
+
+```js
+if (featureFlags.newCheckoutFlow) {
+  renderNewCheckout();
+} else {
+  renderOldCheckout();
+}
+```
+
+✔ Removed after release
+✔ Default OFF in Prod
+
+---
+
+### 2️⃣ Operational Flags
+
+Used for safety & rollback.
+
+```js
+if (featureFlags.disablePayments) {
+  return error("Payments temporarily disabled");
+}
+```
+
+✔ Controlled by ops
+✔ No redeploy needed
+
+---
+
+### 3️⃣ Experiment Flags
+
+Used for A/B testing or gradual rollout.
+
+```js
+if (user.bucket === "A") {
+  showVariantA();
+}
+```
+
+---
+
+## Environment Defaults
+
+| Environment | Flag State            |
+| ----------- | --------------------- |
+| Dev         | ON                    |
+| UAT         | ON                    |
+| Prod        | OFF (unless approved) |
+
+---
+
+## Feature Flag Lifecycle
+
+```
+CREATE → MERGE → DEPLOY → ENABLE → VERIFY → CLEAN UP
+```
+
+🚨 **Flags must be deleted after full rollout**
+
+---
+
+## Trunk-Based Workflow With Flags
+
+```
+feature/* → main (flag OFF) → deploy
+                         ↓
+                    enable flag
+                         ↓
+                    monitor metrics
+```
+
+---
+
+## CI/CD Guardrails for Flags
+
+### Prevent Accidental Prod Enablement
+
+```yaml
+check_flags:
+  stage: test
+  script:
+    - ./validate-flags.sh
+```
+
+Example checks:
+
+* No flags default to ON in Prod
+* No expired flags older than X days
+
+---
+
+## Best Tools (Pick One)
+
+* LaunchDarkly
+* Unleash
+* Flagsmith
+* Custom config (small teams)
+
+---
+
+## Common Anti-Patterns (Avoid These)
+
+❌ Long-lived feature flags
+❌ Flag logic everywhere
+❌ Flags without owners
+❌ No cleanup plan
+
+---
+
+## Final Advice (From Experience)
+
+* **Branching strategy prevents chaos**
+* **Feature flags prevent fear**
+* **CI/CD enforces discipline**
+
+If you want next:
+
+* 🧰 **Feature-flag checklist template**
+* 📊 **Metrics to monitor after enabling flags**
+* 🧪 **Canary deployment strategy**
+* 📘 **New-hire onboarding guide**
+
+Just say the word 👌
+
+
+==========================gh==================
+I'll provide you with comprehensive guidance on setting up a Git branching strategy for GitLab with three environments. Let me load the relevant ability first to ensure I give you the best practices.Now, let me provide you with comprehensive advice on setting up a Git branching strategy on GitLab for your three-environment setup. This is a detailed guide covering all the scenarios you mentioned.
+
+## 1. Recommended Git Branching Strategy: Git Flow with Environment Branches
+
+For a three-environment setup (Dev, UAT, Prod), I recommend a **hybrid approach combining Git Flow with environment-specific branches**:
+
+```
+main (Prod branch) - Always stable, production-ready
+├── uat (UAT branch) - Integration environment
+├── develop (Dev branch) - Development environment
+└── feature branches (feature/*, feature/develop/*)
+    ├── hotfix branches (hotfix/*, hotfix/prod/*, hotfix/uat/*)
+    ├── bugfix branches (bugfix/*, bugfix/dev/*)
+    └── release branches (release/*, release/v*)
+```
+
+---
+
+## 2. Branching Strategy Details
+
+### **Primary Environment Branches**
+
+| Branch | Purpose | Deployment | Source |
+|--------|---------|-----------|--------|
+| **main** | Production | Prod environment | From `release/*` or `hotfix/prod/*` |
+| **uat** | User Acceptance Testing | UAT environment | From `release/*` or `hotfix/uat/*` |
+| **develop** | Development/Integration | Dev environment | From `feature/*`, `bugfix/*` |
+
+### **Supporting Branch Types**
+
+#### **Feature Branches**
+```
+feature/TICKET-123-feature-name (base: develop)
+feature/develop/TICKET-123-feature-name (if feature is dev-only)
+```
+- **Source:** `develop`
+- **MR Target:** `develop`
+- **Purpose:** New features for upcoming releases
+- **Naming:** `feature/{ticket-id}-{brief-description}`
+
+#### **Bugfix Branches**
+```
+bugfix/TICKET-456-bug-name (base: develop)
+bugfix/uat/TICKET-457-uat-issue (base: uat)
+bugfix/prod/TICKET-458-prod-issue (base: main)
+```
+- **Source:** Appropriate environment branch
+- **MR Target:** Source environment branch + merge up
+- **Purpose:** Fixing bugs in specific environments
+- **Naming:** `bugfix/{env?}/{ticket-id}-{description}`
+
+#### **Hotfix Branches**
+```
+hotfix/TICKET-789-critical-fix (base: main)
+hotfix/uat/TICKET-790-uat-critical (base: uat)
+```
+- **Source:** `main` (for prod hotfixes), `uat` (for UAT hotfixes)
+- **MR Target:** Source branch + merge up to `develop`
+- **Purpose:** Critical fixes for production/UAT
+- **Naming:** `hotfix/{env?}/{ticket-id}-{description}`
+
+#### **Release Branches**
+```
+release/v1.2.0 (base: develop)
+release/1.2.0 (alternative naming)
+```
+- **Source:** `develop`
+- **MR Target:** `main` → `uat` → `develop`
+- **Purpose:** Prepare release, final testing, version bumps
+- **Naming:** `release/{version-number}`
+
+---
+
+## 3. Common Development Scenarios & Solutions
+
+### **Scenario 1: Regular Feature Release**
+
+**Process:**
+```
+1. Create feature branch from develop
+   $ git checkout develop
+   $ git pull origin develop
+   $ git checkout -b feature/JIRA-123-new-feature
+
+2. Develop feature, commit regularly
+   $ git push origin feature/JIRA-123-new-feature
+
+3. Create MR: feature/JIRA-123-new-feature → develop
+   - Requires 1 approval
+   - All pipeline checks pass
+   - Squash commits (optional but recommended)
+
+4. After merge, feature is available in Dev environment
+
+5. When ready for release:
+   $ git checkout develop
+   $ git pull origin develop
+   $ git checkout -b release/v1.2.0
+
+6. Create MR: release/v1.2.0 → main
+   - Bump version numbers
+   - Update changelog
+   - Requires 2 approvals
+   - Creates release tag
+   - Main merges to uat, uat merges to develop
+```
+
+**MR Targets:**
+- Source: `feature/JIRA-123-*` → Target: `develop`
+- Source: `release/v1.2.0` → Target: `main` → `uat` → `develop`
+
+---
+
+### **Scenario 2: Production Hotfix (Critical Bug)**
+
+**Problem:** Critical bug in Prod, but Dev/UAT have unreleased features
+
+**Solution:**
+```
+1. Create hotfix from main (NOT develop)
+   $ git checkout main
+   $ git pull origin main
+   $ git checkout -b hotfix/JIRA-999-critical-fix
+
+2. Fix the issue, test thoroughly
+   $ git push origin hotfix/JIRA-999-critical-fix
+
+3. Create TWO MRs:
+   MR #1: hotfix/JIRA-999-critical-fix → main
+   - Requires 2 approvals
+   - Triggers prod deployment
+   - Creates git tag
+   
+4. After main merge, create:
+   MR #2: hotfix/JIRA-999-critical-fix → uat
+   MR #3: hotfix/JIRA-999-critical-fix → develop
+   
+5. Delete feature branch after all merges
+
+Result: Fix in Prod, UAT, Dev WITHOUT releasing dev/uat features to Prod
+```
+
+**Key Insight:** Hotfix branches originate from `main`, NOT `develop`, preventing feature contamination.
+
+---
+
+### **Scenario 3: UAT-Specific Hotfix**
+
+**Problem:** Bug found in UAT, not in Dev or Prod
+
+**Solution:**
+```
+1. Create hotfix from uat
+   $ git checkout uat
+   $ git pull origin uat
+   $ git checkout -b hotfix/uat/JIRA-998-uat-bug
+
+2. Fix and push
+   $ git push origin hotfix/uat/JIRA-998-uat-bug
+
+3. Create MRs:
+   MR #1: hotfix/uat/JIRA-998-uat-bug → uat
+   - Testing and approval
+   
+   MR #2: hotfix/uat/JIRA-998-uat-bug → develop
+   - So fix doesn't get lost
+
+Note: Do NOT merge to main (prod)
+```
+
+---
+
+### **Scenario 4: Dev/Dev-Only Bugfix**
+
+**Problem:** Bug only in Dev environment
+
+**Solution:**
+```
+1. Create bugfix from develop
+   $ git checkout develop
+   $ git pull origin develop
+   $ git checkout -b bugfix/JIRA-997-dev-bug
+
+2. Fix, test, push
+   $ git push origin bugfix/JIRA-997-dev-bug
+
+3. Create MR:
+   MR: bugfix/JIRA-997-dev-bug → develop
+   - Standard approval process
+   - Dev deployment
+
+Note: This fix will eventually be in prod via normal release cycle
+```
+
+---
+
+### **Scenario 5: Preventing Production Contamination**
+
+**Challenge:** Ensure Prod gets ONLY hotfixes, not unreleased features
+
+**Solution Strategy:**
+
+```
+WRONG ❌
+main ← release/v1.2.0 ← develop (contains unreleased features)
+(Features sneak into Prod)
+
+CORRECT ✅
+main ← hotfix/critical-fix (isolated fix)
+uat  ← hotfix/critical-fix (propagate hotfix up)
+develop ← hotfix/critical-fix (propagate hotfix up)
+
+AND separately:
+main ← release/v1.3.0 ← develop (only released features)
+```
+
+**Key Rules:**
+1. **Hotfixes ALWAYS originate from `main`** (not develop)
+2. **Release branches originate from `develop`** (contains all features ready)
+3. **Hotfixes are merged UP** (main → uat → develop), never pulled down
+4. **Releases go DOWN** (develop → uat → main), explicitly tagged
+
+---
+
+### **Scenario 6: Regression Issues (Cannot Hard Reset)**
+
+**Problem:** Deployed code has regression, can't delete commits
+
+**Solution: Use Revert Commits**
+
+```
+1. Identify problematic commit
+   $ git log --oneline | grep "regression"
+
+2. Create revert branch
+   $ git checkout -b revert/JIRA-1001-rollback-change-abc123
+   $ git revert abc123  (creates new commit that undoes abc123)
+
+3. Push and create MR
+   $ git push origin revert/JIRA-1001-rollback-change-abc123
+   
+4. MR: revert/... → appropriate environment branch
+   - Deploy revert to Prod
+
+5. Simultaneously, investigate root cause
+   $ git checkout -b bugfix/JIRA-1002-regression-investigation
+
+Benefits:
+- Full audit trail (commit history shows what happened)
+- No lost code (original commit stays, revert is explicit)
+- Safe rollback (revert commit is tested like any change)
+```
+
+**Alternative: Feature Flag Approach**
+```
+Instead of revert, disable feature:
+- Add feature flag in code
+- Disable flag in Prod configuration
+- Fix issue
+- Re-enable flag (no new deployment needed)
+```
+
+---
+
+### **Scenario 7: Downgrading Versions (Release Version Rollback)**
+
+**Problem:** v1.3.0 has critical issue, need to rollback to v1.2.5
+
+**Solution:**
+
+```
+Option 1: Revert Release Commit
+1. Identify the merge commit that brought v1.3.0 to main
+   $ git log --oneline --graph | grep -i "merge"
+
+2. Create revert branch
+   $ git checkout main
+   $ git checkout -b revert/version-1-3-0-to-1-2-5
+   $ git revert -m 1 <merge-commit-hash>
+
+3. Update version to 1.2.5
+4. Create MR and deploy
+
+Option 2: Cherry-pick from Previous Release Tag
+1. Create release branch from old tag
+   $ git checkout tags/v1.2.5
+   $ git checkout -b emergency/restore-v1-2-5
+
+2. Create MR: emergency/restore-v1-2-5 → main
+3. Tag as v1.2.5-emergency or v1.2.6 (if patching v1.2.5)
+
+Option 3: Reset HEAD (if Prod not yet deployed from v1.3.0)
+1. Before Prod deployment:
+   $ git checkout main
+   $ git reset --soft <tag-of-v1.2.5>
+   $ git commit -m "revert to v1.2.5"
+
+Recommended: Option 1 (reverts are traceable, safe)
+```
+
+---
+
+### **Scenario 8: Commit Conflicts**
+
+**Common Conflict Scenarios:**
+
+#### **Scenario 8A: Feature Branch Conflict with Develop**
+
+```
+Situation:
+- feature/A modifies file.js lines 10-20
+- feature/B modifies file.js lines 15-25
+- Both merged to develop, one causes conflict
+
+Resolution:
+1. Pull latest develop
+   $ git checkout feature/C
+   $ git pull origin develop  (conflict!)
+
+2. Open file, find conflict markers:
+   <<<<<<< HEAD (your changes)
+   your code
+   =======
+   their code
+   >>>>>>> develop
+
+3. Manually resolve or use merge tool
+   $ git mergetool
+
+4. Test the merged code
+   $ npm test
+
+5. Complete merge
+   $ git add file.js
+   $ git commit -m "resolve conflict with develop"
+   $ git push origin feature/C
+
+Prevention:
+- Develop features in isolation
+- Communicate with team about file changes
+- Rebase feature branch frequently
+- Keep files focused on specific concerns
+```
+
+#### **Scenario 8B: Release Branch Conflict During Merges**
+
+```
+Situation:
+release/v1.2.0 → main (merges OK)
+main → uat (CONFLICT because uat diverged)
+
+Cause:
+- uat has hotfixes that main doesn't have
+- release branch modifies overlapping code
+
+Resolution:
+1. Handle in uat branch
+   $ git checkout uat
+   $ git merge --no-ff release/v1.2.0  (conflict!)
+
+2. Resolve conflicts (same as 8A)
+
+3. Commit merge
+   $ git push origin uat
+
+4. Continue to develop
+   $ git checkout develop
+   $ git merge --no-ff uat  (might have conflicts again)
+
+Prevention:
+- Keep release window short
+- Limit hotfixes during release
+- Communicate release timing
+```
+
+#### **Scenario 8C: Hotfix Conflict While Propagating Up**
+
+```
+Situation:
+hotfix/prod/critical-fix created from main
+After merging to main, need to merge to uat, then develop
+But uat/develop have conflicting changes
+
+Resolution:
+1. First merge to uat
+   $ git checkout uat
+   $ git merge --no-ff hotfix/prod/critical-fix
+
+2. If conflict:
+   - Resolve (prefer hotfix changes)
+   - Test thoroughly
+   - Commit merge
+
+3. Then merge to develop
+   $ git checkout develop
+   $ git merge --no-ff uat
+   (or merge hotfix branch directly if no conflict)
+
+Strategy:
+- Hotfix should be minimal (less likely to conflict)
+- Test in uat before merging to develop
+```
+
+#### **Scenario 8D: Conflicting Hotfixes**
+
+```
+Situation:
+hotfix/prod/999-critical-fix #1 deployed
+While fix #1 in testing, critical bug #2 found
+hotfix/prod/1000-critical-fix #2 needs to be independent
+
+Resolution:
+1. Both hotfixes originate from main
+   hotfix/prod/999-critical-fix (from main@t1)
+   hotfix/prod/1000-critical-fix (from main@t1)
+
+2. Deploy hotfix/999 first
+   $ git checkout main
+   $ git merge --no-ff hotfix/prod/999-critical-fix
+   $ git tag v1.0.1
+
+3. Deploy hotfix/1000 next
+   $ git checkout main
+   $ git merge --no-ff hotfix/prod/1000-critical-fix
+   $ git tag v1.0.2
+   (should have no conflict with 999)
+
+4. If they DO conflict:
+   - Probably touching same code
+   - Manually test both fixes together
+   - Create combined hotfix
+   - Test, deploy
+```
+
+---
+
+## 4. Protected Branches Configuration
+
+### **Recommended Protected Branch Setup**
+
+```yaml
+Branches to Protect:
+├── main (STRICT)
+├── uat (STRICT)
+├── develop (MODERATE)
+└── release/* (MODERATE)
+```
+
+### **main (Production) - Maximum Protection**
+
+```
+Protection Rules:
+✓ Require pull request reviews before merging
+  - Minimum 2 approvals
+  - Dismiss stale reviews when new commits pushed
+  - Require review from CODEOWNERS (security, leads)
+
+✓ Require status checks to pass
+  - Unit tests passing
+  - Integration tests passing
+  - Code coverage > 80%
+  - Security scanning (SAST) passing
+  - No critical vulnerabilities
+
+✓ Require branches to be up to date before merging
+  - Prevents merging stale branches
+
+✓ Require code review from designated approvers
+  - Team leads or senior developers
+
+✓ Require signed commits
+  - Ensure provenance and accountability
+
+✓ Dismiss stale reviews
+  - New commits require new approvals
+
+✓ Restrict who can push to branch
+  - Only CI/CD system or designated users
+  - Enforce via "Force push" prohibition
+
+✓ Include administrators in restrictions
+  - Even admins must follow process
+```
+
+### **uat (User Acceptance Testing) - High Protection**
+
+```
+Protection Rules:
+✓ Require pull request reviews before merging
+  - Minimum 1-2 approvals
+  - From QA lead and developer
+
+✓ Require status checks to pass
+  - All integration tests
+  - Regression test suite
+  - Performance baseline checks
+
+✓ Require branches to be up to date before merging
+
+✓ Automatic deployment after merge
+  - CI/CD triggers UAT environment deployment
+
+✓ Allow force push for hotfixes only
+  - But with approval process
+```
+
+### **develop (Development) - Moderate Protection**
+
+```
+Protection Rules:
+✓ Require pull request reviews before merging
+  - Minimum 1 approval
+  - From any team member
+
+✓ Require status checks to pass
+  - Unit tests passing
+  - Linting passing
+  - Build succeeding
+
+✓ Automatic deployment after merge
+  - CI/CD triggers Dev environment deployment
+
+✗ Allow direct pushes to bypass reviews
+  - NO direct pushes (always use MR)
+```
+
+### **GitLab Settings Example (YAML/UI)**
+
+```yaml
+# Push Rules / Branch Protection
+main:
+  protected: true
+  require_approvals: 2
+  require_codeowners_review: true
+  require_status_checks: true
+  allow_force_push: false
+  allow_deletion: false
+  minimum_approvals_to_override: N/A
+  ci_pipeline_must_succeed: true
+
+uat:
+  protected: true
+  require_approvals: 1
+  require_status_checks: true
+  allow_force_push: false
+  allow_deletion: false
+  ci_pipeline_must_succeed: true
+
+develop:
+  protected: true
+  require_approvals: 1
+  require_status_checks: true
+  allow_force_push: false
+  allow_deletion: false
+  ci_pipeline_must_succeed: true
+```
+
+---
+
+## 5. Git Tags vs. Release Branches - Recommended Approach
+
+### **Recommended: Combination (Both)**
+
+```
+Use Git Tags for VERSION MARKING:
+├── v1.0.0      (release from main)
+├── v1.0.1      (hotfix from main)
+├── v1.1.0      (release from main)
+└── v2.0.0      (major release)
+
+Use Release Branches for VERSION PREPARATION:
+├── release/v1.0.0 (from develop, merges to main)
+├── release/v1.0.1 (hotfix release branch)
+├── release/v1.1.0
+└── release/v2.0.0
+```
+
+### **When to Use Tags**
+
+```
+Scenario: Marking stable release points
+
+Process:
+1. Finalize release/v1.2.0 branch
+2. Merge to main via MR
+3. Create git tag from main
+   $ git tag -a v1.2.0 -m "Release v1.2.0 - new features"
+   $ git push origin v1.2.0
+
+4. Create Release Notes in GitLab
+   - Tag automatically creates "Release"
+   - Add release notes, changelog
+   - Mark as pre-release if needed
+
+Benefits:
+- Point-in-time reference for versions
+- Automatic artifact creation
+- Release tracking
+- Rollback reference point
+- Semantic versioning
+```
+
+### **When to Use Release Branches**
+
+```
+Scenario: Allowing changes before release finalization
+
+Process:
+1. Create release/v1.2.0 from develop
+2. Allow final tweaks
+   - Version number bumps
+   - Changelog updates
+   - Critical hotfixes (cherry-picked from develop)
+
+3. Merge to main → tag v1.2.0
+
+4. Merge back to develop (important!)
+
+Benefits:
+- Isolates release from ongoing development
+- Allows stabilization time
+- Prevents new features from sneaking in
+- Clear release window
+```
+
+### **Recommended Workflow**
+
+```
+Graph:
+develop
+  │
+  └─ feature/JIRA-123 ─┐
+  └─ feature/JIRA-124 ─┤
+  └─ feature/JIRA-125 ─┘
+       (all merged)
+  │
+  └─ release/v1.2.0 ───┐
+       (bump version)   │
+       (fix final bugs) │
+  │◄───────────────────┘
+  │◄─ tag: v1.2.0 ◄─── main
+       (production)
+  │
+  └─ feature/JIRA-126 (next release)
+  └─ feature/JIRA-127 (next release)
+```
+
+**Tagging Strategy:**
+```
+Release: git tag -a v1.2.0 -m "Release v1.2.0"
+Hotfix:  git tag -a v1.2.1 -m "Hotfix v1.2.1"
+Beta:    git tag -a v1.3.0-beta.1 -m "Beta release"
+```
+
+---
+
+## 6. GitLab CI/CD Pipeline Validation
+
+### **Recommended CI/CD Pipeline Architecture**
+
+```yaml
+# .gitlab-ci.yml
+
+stages:
+  - validate
+  - test
+  - build
+  - deploy-dev
+  - deploy-uat
+  - deploy-prod
+
+variables:
+  NODE_ENV: "production"
+  REGISTRY: "registry.gitlab.com"
+
+# Stage 1: Validate
+validate:lint:
+  stage: validate
+  image: node:18
+  script:
+    - npm install
+    - npm run lint
+  only:
+    - merge_requests
+    - main
+    - uat
+    - develop
+  allow_failure: false
+
+validate:security:
+  stage: validate
+  image: node:18
+  script:
+    - npm audit --audit-level=moderate
+  only:
+    - merge_requests
+    - main
+    - uat
+    - develop
+  allow_failure: true
+
+# Stage 2: Test
+test:unit:
+  stage: test
+  image: node:18
+  script:
+    - npm install
+    - npm run test:unit -- --coverage
+  coverage: '/Lines\s*:\s*(\d+\.\d+)%/'
+  artifacts:
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage/cobertura-coverage.xml
+  only:
+    - merge_requests
+    - main
+    - uat
+    - develop
+  allow_failure: false
+
+test:integration:
+  stage: test
+  image: node:18
+  services:
+    - postgres:13
+    - redis:6
+  script:
+    - npm install
+    - npm run test:integration
+  only:
+    - merge_requests
+    - main
+    - uat
+    - develop
+  allow_failure: false
+
+test:e2e:
+  stage: test
+  image: node:18
+  script:
+    - npm install
+    - npm run test:e2e
+  only:
+    - main
+    - uat
+    - develop
+  allow_failure: false
+
+# Stage 3: Build
+build:docker:
+  stage: build
+  image: docker:latest
+  services:
+    - docker:dind
+  script:
+    - docker build -t $REGISTRY/$CI_PROJECT_PATH:$CI_COMMIT_SHA .
+    - docker push $REGISTRY/$CI_PROJECT_PATH:$CI_COMMIT_SHA
+  only:
+    - main
+    - uat
+    - develop
+    - tags
+  allow_failure: false
+
+# Stage 4: Deploy to Dev
+deploy:dev:
+  stage: deploy-dev
+  environment:
+    name: development
+    url: https://dev.example.com
+    deployment_tier: development
+  script:
+    - echo "Deploying to Dev..."
+    - kubectl set image deployment/app app=$REGISTRY/$CI_PROJECT_PATH:$CI_COMMIT_SHA -n dev
+  only:
+    - develop
+  when: on_success
+
+# Stage 5: Deploy to UAT
+deploy:uat:
+  stage: deploy-uat
+  environment:
+    name: uat
+    url: https://uat.example.com
+    deployment_tier: staging
+  script:
+    - echo "Deploying to UAT..."
+    - kubectl set image deployment/app app=$REGISTRY/$CI_PROJECT_PATH:$CI_COMMIT_SHA -n uat
+  only:
+    - uat
+  when: manual  # Require manual trigger for UAT
+
+# Stage 6: Deploy to Prod
+deploy:prod:
+  stage: deploy-prod
+  environment:
+    name: production
+    url: https://app.example.com
+    deployment_tier: production
+  script:
+    - echo "Deploying to Production..."
+    - kubectl set image deployment/app app=$REGISTRY/$CI_PROJECT_PATH:$CI_COMMIT_SHA -n prod
+  only:
+    - main
+    - tags
+  when: manual  # Require manual approval for Prod
+  allow_failure: false
+
+# Notifications
+notify:slack:
+  stage: deploy-prod
+  script:
+    - >
+      curl -X POST $SLACK_WEBHOOK
+      -d '{"text":"Deployment to Prod complete"}'
+  when: on_success
+  only:
+    - main
+```
+
+### **MR-Level Validation Rules**
+
+```yaml
+# Enforce in GitLab Settings → Merge Requests
+
+Merge Request Checks:
+✓ All CI/CD pipeline jobs must pass
+  - Lint: must pass
+  - Unit tests: must pass
+  - Integration tests: must pass
+  - Build: must pass
+  - Security scan: must pass (no critical issues)
+
+✓ Code coverage must meet threshold
+  - Overall: >= 80%
+  - Changed files: >= 90%
+  - No decrease in coverage allowed
+
+✓ Requires 2 approvals for main branch
+✓ Requires 1 approval for uat/develop
+
+✓ CODEOWNERS review required
+  - Automatically request review from code owners
+
+✓ Cannot be merged while WIP
+  - Use "Draft" label to prevent accidental merge
+
+✓ Requires squash commits (optional but recommended)
+  - Keeps history clean
+  - Easier bisect if needed
+
+✓ Delete branch on merge
+  - Automatic cleanup of feature branches
+```
+
+### **Environment-Specific Validation**
+
+```yaml
+# Pre-deployment Checks
+
+Before Deploy to Dev:
+  ✓ All tests pass
+  ✓ Linting passes
+  ✓ 1 approval minimum
+
+Before Deploy to UAT:
+  ✓ All tests pass
+  ✓ Integration tests pass
+  ✓ E2E tests pass
+  ✓ Security scan passes
+  ✓ Code coverage maintained
+  ✓ 1 approval from QA
+  ✓ Manual trigger required
+  ✓ Merge to uat is protected
+  ✓ Release notes must exist
+
+Before Deploy to Prod:
+  ✓ All above + extra checks
+  ✓ Git tag created (v*.*.*)
+  ✓ Release notes complete
+  ✓ 2 approvals (leads + architecture)
+  ✓ Manual trigger required
+  ✓ Deployment scheduled (avoid peak hours)
+  ✓ Rollback plan documented
+  ✓ Health checks pass in UAT for 24h+ before prod
+```
+
+### **Pipeline Status Visibility**
+
+```
+MR View shows:
+┌───��─────────────────────────────────┐
+│ Pipeline Status: ✓ Passed           │
+├─────────────────────────────────────┤
+│ ✓ validate:lint                     │
+│ ✓ validate:security                 │
+│ ✓ test:unit (87% coverage)          │
+│ ✓ test:integration                  │
+│ ✓ build:docker                      │
+└─────────────────────────────────────┘
+
+Approvals:
+┌─────────────────────────────────────┐
+│ Approvals: 1 of 2 required          │
+│ ✓ jane.doe (approved)               │
+│ ○ john.smith (pending)              │
+└─────────────────────────────────────┘
+
+Ready to Merge: ✗ (needs 1 more approval)
+```
+
+---
+
+## 7. Summary Table: Checkout and MR Guidelines
+
+| Scenario | Checkout From | Branch Name | MR Source → Target | Protection | Notes |
+|----------|---|---|---|---|---|
+| New Feature | develop | `feature/JIRA-123-name` | → develop | 1 approval | Standard development |
+| Regular Release | develop | `release/v1.2.0` | → main → uat → develop | 2 approvals | Version bump required |
+| Prod Hotfix | main | `hotfix/JIRA-999-name` | → main, then → uat, then → develop | 2 approvals | Critical only, Prod priority |
+| UAT Hotfix | uat | `hotfix/uat/JIRA-998-name` | → uat → develop | 1-2 approvals | Do NOT go to main |
+| Dev Bugfix | develop | `bugfix/JIRA-997-name` | → develop | 1 approval | Standard review |
+| Regression Fix | hotfix/main | `revert/JIRA-1001-name` | → main → uat → develop | 2 approvals | Use git revert, not hard reset |
+| Emergency Rollback | main | `emergency/restore-v*` | → main | 2 approvals + Emergency protocol | Version downgrade |
+
+---
+
+## 8. Best Practices Checklist
+
+```
+Branch Management:
+☑ Always create branches from appropriate source
+☑ Keep branch names consistent (ticket-based)
+☑ Delete merged branches (GitLab auto-delete enabled)
+☑ Never force push to protected branches
+☑ Rebase feature branches before MR to keep clean history
+
+Commit Practices:
+☑ Atomic commits (one logical change per commit)
+☑ Meaningful commit messages (Jira-linked)
+☑ Sign commits with GPG key
+☑ Avoid large commits (split into smaller MRs if >500 lines)
+
+Code Review:
+☑ Always use MR, never direct push
+☑ Require approval before merge
+☑ Review logic, security, tests, documentation
+☑ Approve only when confident in code quality
+
+Release Process:
+☑ Use semantic versioning (MAJOR.MINOR.PATCH)
+☑ Create git tags for all releases
+☑ Document release notes before tagging
+☑ Test 24h in UAT before Prod deployment
+☑ Planned maintenance window for Prod releases
+
+Hotfix Protocol:
+☑ Create from main (never develop)
+☑ Merge to main first
+☑ Then propagate UP (uat, develop)
+☑ Minimal changes (only fix, no refactoring)
+☑ Test thoroughly in uat before prod
+
+CI/CD:
+☑ All MRs must have passing pipeline
+☑ Maintain code coverage threshold
+☑ Run security scans on every MR
+☑ E2E tests required before Prod
+☑ Deployment requires manual approval (Prod)
+```
+
+---
+
+This comprehensive strategy should address all your requirements for Dev, UAT, and Prod environments while maintaining code quality, preventing contamination, and enabling parallel development with clear separation of concerns. The key is strict protection of `main` (Prod) and careful hotfix origination to prevent feature creep into production.
+
+======================gh==================
+
+I'll provide you with comprehensive guidance on setting up a Git branching strategy for GitLab with three environments. Let me load the relevant ability first to ensure I give you the best practices.Now, let me provide you with comprehensive advice on setting up a Git branching strategy on GitLab for your three-environment setup. This is a detailed guide covering all the scenarios you mentioned.
+
+## 1. Recommended Git Branching Strategy: Git Flow with Environment Branches
+
+For a three-environment setup (Dev, UAT, Prod), I recommend a **hybrid approach combining Git Flow with environment-specific branches**:
+
+```
+main (Prod branch) - Always stable, production-ready
+├── uat (UAT branch) - Integration environment
+├── develop (Dev branch) - Development environment
+└── feature branches (feature/*, feature/develop/*)
+    ├── hotfix branches (hotfix/*, hotfix/prod/*, hotfix/uat/*)
+    ├── bugfix branches (bugfix/*, bugfix/dev/*)
+    └── release branches (release/*, release/v*)
+```
+
+---
+
+## 2. Branching Strategy Details
+
+### **Primary Environment Branches**
+
+| Branch | Purpose | Deployment | Source |
+|--------|---------|-----------|--------|
+| **main** | Production | Prod environment | From `release/*` or `hotfix/prod/*` |
+| **uat** | User Acceptance Testing | UAT environment | From `release/*` or `hotfix/uat/*` |
+| **develop** | Development/Integration | Dev environment | From `feature/*`, `bugfix/*` |
+
+### **Supporting Branch Types**
+
+#### **Feature Branches**
+```
+feature/TICKET-123-feature-name (base: develop)
+feature/develop/TICKET-123-feature-name (if feature is dev-only)
+```
+- **Source:** `develop`
+- **MR Target:** `develop`
+- **Purpose:** New features for upcoming releases
+- **Naming:** `feature/{ticket-id}-{brief-description}`
+
+#### **Bugfix Branches**
+```
+bugfix/TICKET-456-bug-name (base: develop)
+bugfix/uat/TICKET-457-uat-issue (base: uat)
+bugfix/prod/TICKET-458-prod-issue (base: main)
+```
+- **Source:** Appropriate environment branch
+- **MR Target:** Source environment branch + merge up
+- **Purpose:** Fixing bugs in specific environments
+- **Naming:** `bugfix/{env?}/{ticket-id}-{description}`
+
+#### **Hotfix Branches**
+```
+hotfix/TICKET-789-critical-fix (base: main)
+hotfix/uat/TICKET-790-uat-critical (base: uat)
+```
+- **Source:** `main` (for prod hotfixes), `uat` (for UAT hotfixes)
+- **MR Target:** Source branch + merge up to `develop`
+- **Purpose:** Critical fixes for production/UAT
+- **Naming:** `hotfix/{env?}/{ticket-id}-{description}`
+
+#### **Release Branches**
+```
+release/v1.2.0 (base: develop)
+release/1.2.0 (alternative naming)
+```
+- **Source:** `develop`
+- **MR Target:** `main` → `uat` → `develop`
+- **Purpose:** Prepare release, final testing, version bumps
+- **Naming:** `release/{version-number}`
+
+---
+
+## 3. Common Development Scenarios & Solutions
+
+### **Scenario 1: Regular Feature Release**
+
+**Process:**
+```
+1. Create feature branch from develop
+   $ git checkout develop
+   $ git pull origin develop
+   $ git checkout -b feature/JIRA-123-new-feature
+
+2. Develop feature, commit regularly
+   $ git push origin feature/JIRA-123-new-feature
+
+3. Create MR: feature/JIRA-123-new-feature → develop
+   - Requires 1 approval
+   - All pipeline checks pass
+   - Squash commits (optional but recommended)
+
+4. After merge, feature is available in Dev environment
+
+5. When ready for release:
+   $ git checkout develop
+   $ git pull origin develop
+   $ git checkout -b release/v1.2.0
+
+6. Create MR: release/v1.2.0 → main
+   - Bump version numbers
+   - Update changelog
+   - Requires 2 approvals
+   - Creates release tag
+   - Main merges to uat, uat merges to develop
+```
+
+**MR Targets:**
+- Source: `feature/JIRA-123-*` → Target: `develop`
+- Source: `release/v1.2.0` → Target: `main` → `uat` → `develop`
+
+---
+
+### **Scenario 2: Production Hotfix (Critical Bug)**
+
+**Problem:** Critical bug in Prod, but Dev/UAT have unreleased features
+
+**Solution:**
+```
+1. Create hotfix from main (NOT develop)
+   $ git checkout main
+   $ git pull origin main
+   $ git checkout -b hotfix/JIRA-999-critical-fix
+
+2. Fix the issue, test thoroughly
+   $ git push origin hotfix/JIRA-999-critical-fix
+
+3. Create TWO MRs:
+   MR #1: hotfix/JIRA-999-critical-fix → main
+   - Requires 2 approvals
+   - Triggers prod deployment
+   - Creates git tag
+   
+4. After main merge, create:
+   MR #2: hotfix/JIRA-999-critical-fix → uat
+   MR #3: hotfix/JIRA-999-critical-fix → develop
+   
+5. Delete feature branch after all merges
+
+Result: Fix in Prod, UAT, Dev WITHOUT releasing dev/uat features to Prod
+```
+
+**Key Insight:** Hotfix branches originate from `main`, NOT `develop`, preventing feature contamination.
+
+---
+
+### **Scenario 3: UAT-Specific Hotfix**
+
+**Problem:** Bug found in UAT, not in Dev or Prod
+
+**Solution:**
+```
+1. Create hotfix from uat
+   $ git checkout uat
+   $ git pull origin uat
+   $ git checkout -b hotfix/uat/JIRA-998-uat-bug
+
+2. Fix and push
+   $ git push origin hotfix/uat/JIRA-998-uat-bug
+
+3. Create MRs:
+   MR #1: hotfix/uat/JIRA-998-uat-bug → uat
+   - Testing and approval
+   
+   MR #2: hotfix/uat/JIRA-998-uat-bug → develop
+   - So fix doesn't get lost
+
+Note: Do NOT merge to main (prod)
+```
+
+---
+
+### **Scenario 4: Dev/Dev-Only Bugfix**
+
+**Problem:** Bug only in Dev environment
+
+**Solution:**
+```
+1. Create bugfix from develop
+   $ git checkout develop
+   $ git pull origin develop
+   $ git checkout -b bugfix/JIRA-997-dev-bug
+
+2. Fix, test, push
+   $ git push origin bugfix/JIRA-997-dev-bug
+
+3. Create MR:
+   MR: bugfix/JIRA-997-dev-bug → develop
+   - Standard approval process
+   - Dev deployment
+
+Note: This fix will eventually be in prod via normal release cycle
+```
+
+---
+
+### **Scenario 5: Preventing Production Contamination**
+
+**Challenge:** Ensure Prod gets ONLY hotfixes, not unreleased features
+
+**Solution Strategy:**
+
+```
+WRONG ❌
+main ← release/v1.2.0 ← develop (contains unreleased features)
+(Features sneak into Prod)
+
+CORRECT ✅
+main ← hotfix/critical-fix (isolated fix)
+uat  ← hotfix/critical-fix (propagate hotfix up)
+develop ← hotfix/critical-fix (propagate hotfix up)
+
+AND separately:
+main ← release/v1.3.0 ← develop (only released features)
+```
+
+**Key Rules:**
+1. **Hotfixes ALWAYS originate from `main`** (not develop)
+2. **Release branches originate from `develop`** (contains all features ready)
+3. **Hotfixes are merged UP** (main → uat → develop), never pulled down
+4. **Releases go DOWN** (develop → uat → main), explicitly tagged
+
+---
+
+### **Scenario 6: Regression Issues (Cannot Hard Reset)**
+
+**Problem:** Deployed code has regression, can't delete commits
+
+**Solution: Use Revert Commits**
+
+```
+1. Identify problematic commit
+   $ git log --oneline | grep "regression"
+
+2. Create revert branch
+   $ git checkout -b revert/JIRA-1001-rollback-change-abc123
+   $ git revert abc123  (creates new commit that undoes abc123)
+
+3. Push and create MR
+   $ git push origin revert/JIRA-1001-rollback-change-abc123
+   
+4. MR: revert/... → appropriate environment branch
+   - Deploy revert to Prod
+
+5. Simultaneously, investigate root cause
+   $ git checkout -b bugfix/JIRA-1002-regression-investigation
+
+Benefits:
+- Full audit trail (commit history shows what happened)
+- No lost code (original commit stays, revert is explicit)
+- Safe rollback (revert commit is tested like any change)
+```
+
+**Alternative: Feature Flag Approach**
+```
+Instead of revert, disable feature:
+- Add feature flag in code
+- Disable flag in Prod configuration
+- Fix issue
+- Re-enable flag (no new deployment needed)
+```
+
+---
+
+### **Scenario 7: Downgrading Versions (Release Version Rollback)**
+
+**Problem:** v1.3.0 has critical issue, need to rollback to v1.2.5
+
+**Solution:**
+
+```
+Option 1: Revert Release Commit
+1. Identify the merge commit that brought v1.3.0 to main
+   $ git log --oneline --graph | grep -i "merge"
+
+2. Create revert branch
+   $ git checkout main
+   $ git checkout -b revert/version-1-3-0-to-1-2-5
+   $ git revert -m 1 <merge-commit-hash>
+
+3. Update version to 1.2.5
+4. Create MR and deploy
+
+Option 2: Cherry-pick from Previous Release Tag
+1. Create release branch from old tag
+   $ git checkout tags/v1.2.5
+   $ git checkout -b emergency/restore-v1-2-5
+
+2. Create MR: emergency/restore-v1-2-5 → main
+3. Tag as v1.2.5-emergency or v1.2.6 (if patching v1.2.5)
+
+Option 3: Reset HEAD (if Prod not yet deployed from v1.3.0)
+1. Before Prod deployment:
+   $ git checkout main
+   $ git reset --soft <tag-of-v1.2.5>
+   $ git commit -m "revert to v1.2.5"
+
+Recommended: Option 1 (reverts are traceable, safe)
+```
+
+---
+
+### **Scenario 8: Commit Conflicts**
+
+**Common Conflict Scenarios:**
+
+#### **Scenario 8A: Feature Branch Conflict with Develop**
+
+```
+Situation:
+- feature/A modifies file.js lines 10-20
+- feature/B modifies file.js lines 15-25
+- Both merged to develop, one causes conflict
+
+Resolution:
+1. Pull latest develop
+   $ git checkout feature/C
+   $ git pull origin develop  (conflict!)
+
+2. Open file, find conflict markers:
+   <<<<<<< HEAD (your changes)
+   your code
+   =======
+   their code
+   >>>>>>> develop
+
+3. Manually resolve or use merge tool
+   $ git mergetool
+
+4. Test the merged code
+   $ npm test
+
+5. Complete merge
+   $ git add file.js
+   $ git commit -m "resolve conflict with develop"
+   $ git push origin feature/C
+
+Prevention:
+- Develop features in isolation
+- Communicate with team about file changes
+- Rebase feature branch frequently
+- Keep files focused on specific concerns
+```
+
+#### **Scenario 8B: Release Branch Conflict During Merges**
+
+```
+Situation:
+release/v1.2.0 → main (merges OK)
+main → uat (CONFLICT because uat diverged)
+
+Cause:
+- uat has hotfixes that main doesn't have
+- release branch modifies overlapping code
+
+Resolution:
+1. Handle in uat branch
+   $ git checkout uat
+   $ git merge --no-ff release/v1.2.0  (conflict!)
+
+2. Resolve conflicts (same as 8A)
+
+3. Commit merge
+   $ git push origin uat
+
+4. Continue to develop
+   $ git checkout develop
+   $ git merge --no-ff uat  (might have conflicts again)
+
+Prevention:
+- Keep release window short
+- Limit hotfixes during release
+- Communicate release timing
+```
+
+#### **Scenario 8C: Hotfix Conflict While Propagating Up**
+
+```
+Situation:
+hotfix/prod/critical-fix created from main
+After merging to main, need to merge to uat, then develop
+But uat/develop have conflicting changes
+
+Resolution:
+1. First merge to uat
+   $ git checkout uat
+   $ git merge --no-ff hotfix/prod/critical-fix
+
+2. If conflict:
+   - Resolve (prefer hotfix changes)
+   - Test thoroughly
+   - Commit merge
+
+3. Then merge to develop
+   $ git checkout develop
+   $ git merge --no-ff uat
+   (or merge hotfix branch directly if no conflict)
+
+Strategy:
+- Hotfix should be minimal (less likely to conflict)
+- Test in uat before merging to develop
+```
+
+#### **Scenario 8D: Conflicting Hotfixes**
+
+```
+Situation:
+hotfix/prod/999-critical-fix #1 deployed
+While fix #1 in testing, critical bug #2 found
+hotfix/prod/1000-critical-fix #2 needs to be independent
+
+Resolution:
+1. Both hotfixes originate from main
+   hotfix/prod/999-critical-fix (from main@t1)
+   hotfix/prod/1000-critical-fix (from main@t1)
+
+2. Deploy hotfix/999 first
+   $ git checkout main
+   $ git merge --no-ff hotfix/prod/999-critical-fix
+   $ git tag v1.0.1
+
+3. Deploy hotfix/1000 next
+   $ git checkout main
+   $ git merge --no-ff hotfix/prod/1000-critical-fix
+   $ git tag v1.0.2
+   (should have no conflict with 999)
+
+4. If they DO conflict:
+   - Probably touching same code
+   - Manually test both fixes together
+   - Create combined hotfix
+   - Test, deploy
+```
+
+---
+
+## 4. Protected Branches Configuration
+
+### **Recommended Protected Branch Setup**
+
+```yaml
+Branches to Protect:
+├── main (STRICT)
+├── uat (STRICT)
+├── develop (MODERATE)
+└── release/* (MODERATE)
+```
+
+### **main (Production) - Maximum Protection**
+
+```
+Protection Rules:
+✓ Require pull request reviews before merging
+  - Minimum 2 approvals
+  - Dismiss stale reviews when new commits pushed
+  - Require review from CODEOWNERS (security, leads)
+
+✓ Require status checks to pass
+  - Unit tests passing
+  - Integration tests passing
+  - Code coverage > 80%
+  - Security scanning (SAST) passing
+  - No critical vulnerabilities
+
+✓ Require branches to be up to date before merging
+  - Prevents merging stale branches
+
+✓ Require code review from designated approvers
+  - Team leads or senior developers
+
+✓ Require signed commits
+  - Ensure provenance and accountability
+
+✓ Dismiss stale reviews
+  - New commits require new approvals
+
+✓ Restrict who can push to branch
+  - Only CI/CD system or designated users
+  - Enforce via "Force push" prohibition
+
+✓ Include administrators in restrictions
+  - Even admins must follow process
+```
+
+### **uat (User Acceptance Testing) - High Protection**
+
+```
+Protection Rules:
+✓ Require pull request reviews before merging
+  - Minimum 1-2 approvals
+  - From QA lead and developer
+
+✓ Require status checks to pass
+  - All integration tests
+  - Regression test suite
+  - Performance baseline checks
+
+✓ Require branches to be up to date before merging
+
+✓ Automatic deployment after merge
+  - CI/CD triggers UAT environment deployment
+
+✓ Allow force push for hotfixes only
+  - But with approval process
+```
+
+### **develop (Development) - Moderate Protection**
+
+```
+Protection Rules:
+✓ Require pull request reviews before merging
+  - Minimum 1 approval
+  - From any team member
+
+✓ Require status checks to pass
+  - Unit tests passing
+  - Linting passing
+  - Build succeeding
+
+✓ Automatic deployment after merge
+  - CI/CD triggers Dev environment deployment
+
+✗ Allow direct pushes to bypass reviews
+  - NO direct pushes (always use MR)
+```
+
+### **GitLab Settings Example (YAML/UI)**
+
+```yaml
+# Push Rules / Branch Protection
+main:
+  protected: true
+  require_approvals: 2
+  require_codeowners_review: true
+  require_status_checks: true
+  allow_force_push: false
+  allow_deletion: false
+  minimum_approvals_to_override: N/A
+  ci_pipeline_must_succeed: true
+
+uat:
+  protected: true
+  require_approvals: 1
+  require_status_checks: true
+  allow_force_push: false
+  allow_deletion: false
+  ci_pipeline_must_succeed: true
+
+develop:
+  protected: true
+  require_approvals: 1
+  require_status_checks: true
+  allow_force_push: false
+  allow_deletion: false
+  ci_pipeline_must_succeed: true
+```
+
+---
+
+## 5. Git Tags vs. Release Branches - Recommended Approach
+
+### **Recommended: Combination (Both)**
+
+```
+Use Git Tags for VERSION MARKING:
+├── v1.0.0      (release from main)
+├── v1.0.1      (hotfix from main)
+├── v1.1.0      (release from main)
+└── v2.0.0      (major release)
+
+Use Release Branches for VERSION PREPARATION:
+├── release/v1.0.0 (from develop, merges to main)
+├── release/v1.0.1 (hotfix release branch)
+├── release/v1.1.0
+└── release/v2.0.0
+```
+
+### **When to Use Tags**
+
+```
+Scenario: Marking stable release points
+
+Process:
+1. Finalize release/v1.2.0 branch
+2. Merge to main via MR
+3. Create git tag from main
+   $ git tag -a v1.2.0 -m "Release v1.2.0 - new features"
+   $ git push origin v1.2.0
+
+4. Create Release Notes in GitLab
+   - Tag automatically creates "Release"
+   - Add release notes, changelog
+   - Mark as pre-release if needed
+
+Benefits:
+- Point-in-time reference for versions
+- Automatic artifact creation
+- Release tracking
+- Rollback reference point
+- Semantic versioning
+```
+
+### **When to Use Release Branches**
+
+```
+Scenario: Allowing changes before release finalization
+
+Process:
+1. Create release/v1.2.0 from develop
+2. Allow final tweaks
+   - Version number bumps
+   - Changelog updates
+   - Critical hotfixes (cherry-picked from develop)
+
+3. Merge to main → tag v1.2.0
+
+4. Merge back to develop (important!)
+
+Benefits:
+- Isolates release from ongoing development
+- Allows stabilization time
+- Prevents new features from sneaking in
+- Clear release window
+```
+
+### **Recommended Workflow**
+
+```
+Graph:
+develop
+  │
+  └─ feature/JIRA-123 ─┐
+  └─ feature/JIRA-124 ─┤
+  └─ feature/JIRA-125 ─┘
+       (all merged)
+  │
+  └─ release/v1.2.0 ───┐
+       (bump version)   │
+       (fix final bugs) │
+  │◄───────────────────┘
+  │◄─ tag: v1.2.0 ◄─── main
+       (production)
+  │
+  └─ feature/JIRA-126 (next release)
+  └─ feature/JIRA-127 (next release)
+```
+
+**Tagging Strategy:**
+```
+Release: git tag -a v1.2.0 -m "Release v1.2.0"
+Hotfix:  git tag -a v1.2.1 -m "Hotfix v1.2.1"
+Beta:    git tag -a v1.3.0-beta.1 -m "Beta release"
+```
+
+---
+
+## 6. GitLab CI/CD Pipeline Validation
+
+### **Recommended CI/CD Pipeline Architecture**
+
+```yaml
+# .gitlab-ci.yml
+
+stages:
+  - validate
+  - test
+  - build
+  - deploy-dev
+  - deploy-uat
+  - deploy-prod
+
+variables:
+  NODE_ENV: "production"
+  REGISTRY: "registry.gitlab.com"
+
+# Stage 1: Validate
+validate:lint:
+  stage: validate
+  image: node:18
+  script:
+    - npm install
+    - npm run lint
+  only:
+    - merge_requests
+    - main
+    - uat
+    - develop
+  allow_failure: false
+
+validate:security:
+  stage: validate
+  image: node:18
+  script:
+    - npm audit --audit-level=moderate
+  only:
+    - merge_requests
+    - main
+    - uat
+    - develop
+  allow_failure: true
+
+# Stage 2: Test
+test:unit:
+  stage: test
+  image: node:18
+  script:
+    - npm install
+    - npm run test:unit -- --coverage
+  coverage: '/Lines\s*:\s*(\d+\.\d+)%/'
+  artifacts:
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage/cobertura-coverage.xml
+  only:
+    - merge_requests
+    - main
+    - uat
+    - develop
+  allow_failure: false
+
+test:integration:
+  stage: test
+  image: node:18
+  services:
+    - postgres:13
+    - redis:6
+  script:
+    - npm install
+    - npm run test:integration
+  only:
+    - merge_requests
+    - main
+    - uat
+    - develop
+  allow_failure: false
+
+test:e2e:
+  stage: test
+  image: node:18
+  script:
+    - npm install
+    - npm run test:e2e
+  only:
+    - main
+    - uat
+    - develop
+  allow_failure: false
+
+# Stage 3: Build
+build:docker:
+  stage: build
+  image: docker:latest
+  services:
+    - docker:dind
+  script:
+    - docker build -t $REGISTRY/$CI_PROJECT_PATH:$CI_COMMIT_SHA .
+    - docker push $REGISTRY/$CI_PROJECT_PATH:$CI_COMMIT_SHA
+  only:
+    - main
+    - uat
+    - develop
+    - tags
+  allow_failure: false
+
+# Stage 4: Deploy to Dev
+deploy:dev:
+  stage: deploy-dev
+  environment:
+    name: development
+    url: https://dev.example.com
+    deployment_tier: development
+  script:
+    - echo "Deploying to Dev..."
+    - kubectl set image deployment/app app=$REGISTRY/$CI_PROJECT_PATH:$CI_COMMIT_SHA -n dev
+  only:
+    - develop
+  when: on_success
+
+# Stage 5: Deploy to UAT
+deploy:uat:
+  stage: deploy-uat
+  environment:
+    name: uat
+    url: https://uat.example.com
+    deployment_tier: staging
+  script:
+    - echo "Deploying to UAT..."
+    - kubectl set image deployment/app app=$REGISTRY/$CI_PROJECT_PATH:$CI_COMMIT_SHA -n uat
+  only:
+    - uat
+  when: manual  # Require manual trigger for UAT
+
+# Stage 6: Deploy to Prod
+deploy:prod:
+  stage: deploy-prod
+  environment:
+    name: production
+    url: https://app.example.com
+    deployment_tier: production
+  script:
+    - echo "Deploying to Production..."
+    - kubectl set image deployment/app app=$REGISTRY/$CI_PROJECT_PATH:$CI_COMMIT_SHA -n prod
+  only:
+    - main
+    - tags
+  when: manual  # Require manual approval for Prod
+  allow_failure: false
+
+# Notifications
+notify:slack:
+  stage: deploy-prod
+  script:
+    - >
+      curl -X POST $SLACK_WEBHOOK
+      -d '{"text":"Deployment to Prod complete"}'
+  when: on_success
+  only:
+    - main
+```
+
+### **MR-Level Validation Rules**
+
+```yaml
+# Enforce in GitLab Settings → Merge Requests
+
+Merge Request Checks:
+✓ All CI/CD pipeline jobs must pass
+  - Lint: must pass
+  - Unit tests: must pass
+  - Integration tests: must pass
+  - Build: must pass
+  - Security scan: must pass (no critical issues)
+
+✓ Code coverage must meet threshold
+  - Overall: >= 80%
+  - Changed files: >= 90%
+  - No decrease in coverage allowed
+
+✓ Requires 2 approvals for main branch
+✓ Requires 1 approval for uat/develop
+
+✓ CODEOWNERS review required
+  - Automatically request review from code owners
+
+✓ Cannot be merged while WIP
+  - Use "Draft" label to prevent accidental merge
+
+✓ Requires squash commits (optional but recommended)
+  - Keeps history clean
+  - Easier bisect if needed
+
+✓ Delete branch on merge
+  - Automatic cleanup of feature branches
+```
+
+### **Environment-Specific Validation**
+
+```yaml
+# Pre-deployment Checks
+
+Before Deploy to Dev:
+  ✓ All tests pass
+  ✓ Linting passes
+  ✓ 1 approval minimum
+
+Before Deploy to UAT:
+  ✓ All tests pass
+  ✓ Integration tests pass
+  ✓ E2E tests pass
+  ✓ Security scan passes
+  ✓ Code coverage maintained
+  ✓ 1 approval from QA
+  ✓ Manual trigger required
+  ✓ Merge to uat is protected
+  ✓ Release notes must exist
+
+Before Deploy to Prod:
+  ✓ All above + extra checks
+  ✓ Git tag created (v*.*.*)
+  ✓ Release notes complete
+  ✓ 2 approvals (leads + architecture)
+  ✓ Manual trigger required
+  ✓ Deployment scheduled (avoid peak hours)
+  ✓ Rollback plan documented
+  ✓ Health checks pass in UAT for 24h+ before prod
+```
+
+### **Pipeline Status Visibility**
+
+```
+MR View shows:
+┌───��─────────────────────────────────┐
+│ Pipeline Status: ✓ Passed           │
+├─────────────────────────────────────┤
+│ ✓ validate:lint                     │
+│ ✓ validate:security                 │
+│ ✓ test:unit (87% coverage)          │
+│ ✓ test:integration                  │
+│ ✓ build:docker                      │
+└─────────────────────────────────────┘
+
+Approvals:
+┌─────────────────────────────────────┐
+│ Approvals: 1 of 2 required          │
+│ ✓ jane.doe (approved)               │
+│ ○ john.smith (pending)              │
+└─────────────────────────────────────┘
+
+Ready to Merge: ✗ (needs 1 more approval)
+```
+
+---
+
+## 7. Summary Table: Checkout and MR Guidelines
+
+| Scenario | Checkout From | Branch Name | MR Source → Target | Protection | Notes |
+|----------|---|---|---|---|---|
+| New Feature | develop | `feature/JIRA-123-name` | → develop | 1 approval | Standard development |
+| Regular Release | develop | `release/v1.2.0` | → main → uat → develop | 2 approvals | Version bump required |
+| Prod Hotfix | main | `hotfix/JIRA-999-name` | → main, then → uat, then → develop | 2 approvals | Critical only, Prod priority |
+| UAT Hotfix | uat | `hotfix/uat/JIRA-998-name` | → uat → develop | 1-2 approvals | Do NOT go to main |
+| Dev Bugfix | develop | `bugfix/JIRA-997-name` | → develop | 1 approval | Standard review |
+| Regression Fix | hotfix/main | `revert/JIRA-1001-name` | → main → uat → develop | 2 approvals | Use git revert, not hard reset |
+| Emergency Rollback | main | `emergency/restore-v*` | → main | 2 approvals + Emergency protocol | Version downgrade |
+
+---
+
+## 8. Best Practices Checklist
+
+```
+Branch Management:
+☑ Always create branches from appropriate source
+☑ Keep branch names consistent (ticket-based)
+☑ Delete merged branches (GitLab auto-delete enabled)
+☑ Never force push to protected branches
+☑ Rebase feature branches before MR to keep clean history
+
+Commit Practices:
+☑ Atomic commits (one logical change per commit)
+☑ Meaningful commit messages (Jira-linked)
+☑ Sign commits with GPG key
+☑ Avoid large commits (split into smaller MRs if >500 lines)
+
+Code Review:
+☑ Always use MR, never direct push
+☑ Require approval before merge
+☑ Review logic, security, tests, documentation
+☑ Approve only when confident in code quality
+
+Release Process:
+☑ Use semantic versioning (MAJOR.MINOR.PATCH)
+☑ Create git tags for all releases
+☑ Document release notes before tagging
+☑ Test 24h in UAT before Prod deployment
+☑ Planned maintenance window for Prod releases
+
+Hotfix Protocol:
+☑ Create from main (never develop)
+☑ Merge to main first
+☑ Then propagate UP (uat, develop)
+☑ Minimal changes (only fix, no refactoring)
+☑ Test thoroughly in uat before prod
+
+CI/CD:
+☑ All MRs must have passing pipeline
+☑ Maintain code coverage threshold
+☑ Run security scans on every MR
+☑ E2E tests required before Prod
+☑ Deployment requires manual approval (Prod)
+```
+
+---
+
+This comprehensive strategy should address all your requirements for Dev, UAT, and Prod environments while maintaining code quality, preventing contamination, and enabling parallel development with clear separation of concerns. The key is strict protection of `main` (Prod) and careful hotfix origination to prevent feature creep into production.
+
+## @techenthu23
+
+For hotfix i will like to test it lower environment by deploying it in one of the lower environment by without contaminating the fixes in develop or uat branch unless it is deployed to Prod env . how to go about it and provide a Gitlab CICD pipline which does all this validation check and comes up the bumped version by checking the existing tag and that will be applied after the MR is successfully deployed in the env, Also it need to delete the branches . Also advice on what will be called as hot fix , bug fix , release , feature . the validation for them should be in pipeline
+
+## Copilot
+
+I'll provide you with a comprehensive guide for hotfix testing in lower environments with proper version bumping, tag validation, and automated branch cleanup. Let me create a detailed solution with a complete GitLab CI/CD pipeline.Excellent question! I'll provide you with a comprehensive solution for testing hotfixes in lower environments without contaminating develop/uat branches until Prod deployment, including a complete GitLab CI/CD pipeline with automatic semantic versioning.
+
+---
+
+## 1. Definitions: Feature vs. Bugfix vs. Hotfix vs. Release
+
+### **Clear Taxonomy**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    CHANGE TYPES IN GIT FLOW                     │
+└─────────────────────────────────────────────────────────────────┘
+
+FEATURE
+├─ What: New functionality, enhancements
+├─ Source Branch: develop
+├─ Created From: develop
+├─ MR Target: develop → (later via release) → main
+├─ Deploy To: Dev first (when merged to develop)
+├─ Severity: Normal
+├─ Example: feature/JIRA-456-user-authentication
+├─ Timeline: Cumulative (multiple features per release)
+└─ Version: Bumped in MINOR (v1.0.0 → v1.1.0)
+
+BUGFIX (Non-Critical, Regular)
+├─ What: Defects found during development/UAT (not in prod)
+├─ Source Branch: bugfix/{env}/
+├─ Created From: develop (for dev bugs) OR uat (for uat bugs)
+├─ MR Target: Same environment branch + merge up
+├─ Deploy To: Dev OR UAT (where bug found)
+├─ Severity: Normal/Medium
+├─ Example: bugfix/JIRA-457-login-timeout-issue
+├─ Timeline: Part of ongoing development
+├─ Version: No immediate tag (included in next release)
+└─ Merge Up: After UAT bug fix → develop (to prevent loss)
+
+HOTFIX (Critical Production Bug)
+├─ What: Critical issues in PRODUCTION ONLY
+├─ Source Branch: hotfix/prod/
+├─ Created From: main (MUST originate from main)
+├─ MR Target: main (then tested in isolated env, then uat, then develop)
+├─ Deploy To: Prod ONLY (after testing in isolated branch)
+├─ Severity: CRITICAL - blocks business
+├─ Example: hotfix/prod/JIRA-500-payment-processing-down
+├─ Timeline: Immediate, outside normal release cycle
+├─ Version: Bumped in PATCH (v1.2.3 → v1.2.4)
+├─ Isolation: Deployed to dev-for-testing BEFORE main merge
+└─ Merge Strategy: main → uat → develop (NEVER develop → main)
+
+RELEASE
+├─ What: Formal release combining features & bugfixes
+├─ Source Branch: release/{version}
+├─ Created From: develop
+├─ MR Target: main (then uat, then back to develop)
+├─ Deploy To: Prod only (after UAT sign-off)
+├─ Severity: Planned, versioned
+├─ Example: release/v1.2.0
+├─ Timeline: Scheduled, planned release window
+├─ Version: Set in MAJOR or MINOR (v1.1.0 → v1.2.0)
+└─ Includes: All features/bugfixes merged to develop since last release
+```
+
+### **Quick Reference Table**
+
+| Type | Created From | Target MR | Deploy Environment | Severity | Auto-Tag | Version Bump |
+|------|---|---|---|---|---|---|
+| **Feature** | develop | develop | Dev (on merge) | Normal | No | MINOR (in release) |
+| **Bugfix** | develop/uat | Source env | Dev/UAT (on merge) | Normal/Medium | No | None (in next release) |
+| **Hotfix** | main | main | **Isolated test env first**, then Prod | **CRITICAL** | **YES** | PATCH |
+| **Release** | develop | main | Prod (scheduled) | Planned | YES | MAJOR/MINOR |
+
+---
+
+## 2. Hotfix Testing Strategy Without Contamination
+
+### **The Isolation Pattern**
+
+```
+Problem:
+hotfix/prod/CRITICAL-FIX created from main
+But you need to test it before pushing to main
+If you merge to develop/uat first, it contaminates them
+
+Solution: Use an ISOLATED TEST ENVIRONMENT
+┌─────────────────────────────────────────────────────────┐
+│         HOTFIX ISOLATED TESTING WORKFLOW                │
+└─────────────────────────────────────────────────────────┘
+
+Step 1: Create hotfix from main
+  $ git checkout main
+  $ git checkout -b hotfix/prod/JIRA-500-critical-fix
+
+Step 2: Push to GitLab (don't create MR yet)
+  $ git push origin hotfix/prod/JIRA-500-critical-fix
+
+Step 3: Deploy to ISOLATED TEST ENV via CI/CD
+  - Pipeline detects hotfix/prod/* branch
+  - Deploys to special "hotfix-test" environment
+  - Runs full test suite
+  - QA validates fix works
+  - Confirms no regressions
+
+Step 4: Once validated in hotfix-test environment
+  - Create MR: hotfix/prod/JIRA-500-critical-fix → main
+  - Requires 2 approvals
+  - Tests pass
+  - Merge to main
+  - Auto-create tag v1.2.4 (bumped from v1.2.3)
+  - Deploy to Prod
+
+Step 5: Propagate UP (maintain audit trail)
+  - Create MR: main → uat (merge hotfix)
+  - Create MR: main → develop (merge hotfix)
+  - Delete hotfix branch
+
+Result:
+- Hotfix tested in isolation
+- develop/uat NOT contaminated during testing
+- Main gets hotfix → tag → prod deployment
+- uat/develop get hotfix ONLY after prod confirmation
+- Full audit trail of all changes
+```
+
+### **Environment Configuration**
+
+```yaml
+# Your environment structure
+
+Production (main)
+├─ URL: https://app.example.com
+├─ Branch: main (main branch only)
+└─ Deployment: Manual approval
+
+UAT (uat)
+├─ URL: https://uat.example.com
+├─ Branch: uat
+└─ Deployment: Manual approval
+
+Dev (develop)
+├─ URL: https://dev.example.com
+├─ Branch: develop
+└─ Deployment: Auto after merge
+
+Hotfix Test (isolated, temporary)
+├─ URL: https://hotfix-test.example.com
+├─ Branch: hotfix/prod/*
+├─ Deployment: Auto (for testing only)
+└─ Cleanup: Auto delete after 24h or merge
+```
+
+---
+
+## 3. Complete GitLab CI/CD Pipeline
+
+Here's a complete production-ready pipeline that handles all scenarios:
+
+```yaml name=.gitlab-ci.yml
+# ============================================================================
+# GITLAB CI/CD PIPELINE FOR MULTI-ENVIRONMENT DEPLOYMENT
+# Supports: Features, Bugfixes, Hotfixes, Releases with Auto-Versioning
+# ============================================================================
+
+stages:
+  - validate
+  - test
+  - build
+  - deploy-hotfix-test
+  - deploy-dev
+  - deploy-uat
+  - deploy-prod
+  - cleanup
+  - version
+
+# ============================================================================
+# VARIABLES & DEFAULTS
+# ============================================================================
+
+variables:
+  NODE_ENV: "production"
+  REGISTRY: "registry.gitlab.com"
+  DOCKER_DRIVER: overlay2
+  DOCKER_TLS_CERTDIR: "/certs"
+  # Semantic versioning regex
+  VERSION_REGEX: '^v([0-9]+)\.([0-9]+)\.([0-9]+)$'
+
+default:
+  retry:
+    max: 1
+    when: [runner_system_failure, stuck_or_timeout_failure]
+  timeout: 1h
+
+# ============================================================================
+# HELPER FUNCTIONS (COMMON SCRIPTS)
+# ============================================================================
+
+.setup_git_credentials: &setup_git_credentials |
+  git config user.email "ci-bot@example.com"
+  git config user.name "CI Bot (GitLab)"
+  echo "Git credentials configured"
+
+.get_latest_tag: &get_latest_tag |
+  git fetch --tags origin
+  LATEST_TAG=$(git tag --list 'v*.*.*' --sort=-v:refname | head -n1)
+  if [ -z "$LATEST_TAG" ]; then
+    LATEST_TAG="v0.0.0"
+  fi
+  echo "Latest tag: $LATEST_TAG"
+
+.extract_version_parts: &extract_version_parts |
+  if [[ $LATEST_TAG =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+    MAJOR="${BASH_REMATCH[1]}"
+    MINOR="${BASH_REMATCH[2]}"
+    PATCH="${BASH_REMATCH[3]}"
+  else
+    MAJOR=0
+    MINOR=0
+    PATCH=0
+  fi
+  echo "Extracted version - Major: $MAJOR, Minor: $MINOR, Patch: $PATCH"
+
+.detect_change_type: &detect_change_type |
+  # Determine change type based on branch name
+  if [[ $CI_COMMIT_REF_NAME =~ ^feature/ ]]; then
+    CHANGE_TYPE="feature"
+  elif [[ $CI_COMMIT_REF_NAME =~ ^bugfix/ ]]; then
+    CHANGE_TYPE="bugfix"
+  elif [[ $CI_COMMIT_REF_NAME =~ ^hotfix/prod/ ]]; then
+    CHANGE_TYPE="hotfix"
+  elif [[ $CI_COMMIT_REF_NAME =~ ^release/ ]]; then
+    CHANGE_TYPE="release"
+  else
+    CHANGE_TYPE="other"
+  fi
+  echo "Detected change type: $CHANGE_TYPE"
+
+# ============================================================================
+# STAGE 1: VALIDATE
+# ============================================================================
+
+validate:branch-naming:
+  stage: validate
+  image: alpine:latest
+  script:
+    - |
+      # Validate branch naming conventions
+      BRANCH=$CI_COMMIT_REF_NAME
+      echo "Validating branch: $BRANCH"
+      
+      # List of valid branch patterns
+      VALID_PATTERNS=(
+        "^main$"
+        "^develop$"
+        "^uat$"
+        "^feature/[A-Z]+-[0-9]+-"
+        "^bugfix/dev/[A-Z]+-[0-9]+-"
+        "^bugfix/uat/[A-Z]+-[0-9]+-"
+        "^hotfix/prod/[A-Z]+-[0-9]+-"
+        "^release/v[0-9]+\.[0-9]+\.[0-9]+$"
+        "^revert/.*"
+        "^emergency/.*"
+      )
+      
+      VALID=false
+      for pattern in "${VALID_PATTERNS[@]}"; do
+        if [[ $BRANCH =~ $pattern ]]; then
+          VALID=true
+          break
+        fi
+      done
+      
+      if [ "$VALID" = false ]; then
+        echo "❌ INVALID branch name: $BRANCH"
+        echo "Valid patterns:"
+        printf '%s\n' "${VALID_PATTERNS[@]}"
+        exit 1
+      fi
+      
+      echo "✓ Branch naming valid"
+  only:
+    - merge_requests
+    - branches
+  allow_failure: false
+
+validate:change-type:
+  stage: validate
+  image: alpine:latest
+  script:
+    - *detect_change_type
+    - |
+      # Validate hotfix eligibility
+      if [ "$CHANGE_TYPE" = "hotfix" ]; then
+        echo "🔥 HOTFIX detected"
+        echo "Hotfix must originate from main branch"
+        MERGE_BASE=$(git merge-base origin/main HEAD 2>/dev/null || echo "")
+        if [ -z "$MERGE_BASE" ]; then
+          echo "⚠️  Cannot verify merge-base (may be OK for new hotfix)"
+        else
+          AHEAD_OF_MAIN=$(git rev-list --count main..HEAD 2>/dev/null || echo "0")
+          echo "Commits ahead of main: $AHEAD_OF_MAIN"
+        fi
+      fi
+      
+      # Validate release branch format
+      if [ "$CHANGE_TYPE" = "release" ]; then
+        echo "📦 RELEASE detected"
+        VERSION=${CI_COMMIT_REF_NAME##release/}
+        if ! [[ $VERSION =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          echo "❌ Release branch must be named: release/v{MAJOR}.{MINOR}.{PATCH}"
+          exit 1
+        fi
+        echo "✓ Release version format valid: $VERSION"
+      fi
+  allow_failure: false
+
+validate:lint:
+  stage: validate
+  image: node:18-alpine
+  script:
+    - echo "📋 Installing dependencies..."
+    - npm ci
+    - echo "🧹 Running linter..."
+    - npm run lint 2>&1 || {
+        echo "❌ Linting failed!";
+        exit 1;
+      }
+    - echo "✓ Linting passed"
+  only:
+    - merge_requests
+    - main
+    - uat
+    - develop
+    - /^(feature|bugfix|hotfix|release|revert)\/.*/
+  artifacts:
+    reports:
+      dotenv: build.env
+  allow_failure: false
+
+validate:security-scan:
+  stage: validate
+  image: node:18-alpine
+  script:
+    - echo "🔒 Running security audit..."
+    - npm audit --audit-level=moderate 2>&1 || {
+        echo "⚠️  Security vulnerabilities found (not blocking for now)";
+      }
+    - echo "✓ Security scan completed"
+  allow_failure: true  # Don't block on security (but monitor)
+
+validate:commit-messages:
+  stage: validate
+  image: alpine:latest
+  script:
+    - |
+      echo "📝 Validating commit messages..."
+      # Check that commits reference a Jira ticket or are merge commits
+      git log --oneline $CI_MERGE_REQUEST_DIFF_BASE_SHA..$CI_COMMIT_SHA 2>/dev/null | while read commit; do
+        if [[ ! $commit =~ [A-Z]+-[0-9]+ ]] && [[ ! $commit =~ Merge ]]; then
+          echo "⚠️  Commit should reference Jira ticket: $commit"
+        fi
+      done
+      echo "✓ Commit validation completed"
+  only:
+    - merge_requests
+  allow_failure: true
+
+# ============================================================================
+# STAGE 2: TEST
+# ============================================================================
+
+test:unit:
+  stage: test
+  image: node:18-alpine
+  script:
+    - echo "🧪 Running unit tests..."
+    - npm ci
+    - npm run test:unit -- --coverage --watchAll=false
+    - echo "✓ Unit tests passed"
+  coverage: '/Lines\s*:\s*(\d+\.\d+)%/'
+  artifacts:
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage/cobertura-coverage.xml
+      junit: coverage/junit.xml
+    paths:
+      - coverage/
+    expire_in: 1 week
+  only:
+    - merge_requests
+    - main
+    - uat
+    - develop
+    - /^(feature|bugfix|hotfix|release)\/.*/
+  allow_failure: false
+
+test:integration:
+  stage: test
+  image: node:18-alpine
+  services:
+    - postgres:14-alpine
+    - redis:7-alpine
+  variables:
+    POSTGRES_DB: "app_test"
+    POSTGRES_USER: "test"
+    POSTGRES_PASSWORD: "test"
+    REDIS_HOST: "redis"
+  script:
+    - echo "🧪 Running integration tests..."
+    - npm ci
+    - npm run test:integration -- --watchAll=false
+    - echo "✓ Integration tests passed"
+  only:
+    - merge_requests
+    - main
+    - uat
+    - develop
+    - /^(feature|bugfix|hotfix|release)\/.*/
+  allow_failure: false
+
+test:e2e:
+  stage: test
+  image: node:18-alpine
+  services:
+    - postgres:14-alpine
+  script:
+    - echo "🧪 Running E2E tests..."
+    - npm ci
+    - npm run test:e2e -- --headless
+    - echo "✓ E2E tests passed"
+  artifacts:
+    paths:
+      - e2e/screenshots/
+      - e2e/videos/
+    expire_in: 1 week
+    when: on_failure
+  only:
+    - main
+    - uat
+    - /^(hotfix|release)\/.*/
+  allow_failure: false
+
+# ============================================================================
+# STAGE 3: BUILD & DOCKER IMAGE
+# ============================================================================
+
+build:docker:
+  stage: build
+  image: docker:latest
+  services:
+    - docker:dind
+  before_script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+  script:
+    - echo "🐳 Building Docker image..."
+    - |
+      DOCKER_TAG="$REGISTRY/$CI_PROJECT_PATH:$CI_COMMIT_SHA"
+      DOCKER_TAG_BRANCH="$REGISTRY/$CI_PROJECT_PATH:$CI_COMMIT_REF_SLUG"
+      
+      docker build \
+        --build-arg BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ') \
+        --build-arg VCS_REF=$CI_COMMIT_SHA \
+        --build-arg VERSION=$CI_COMMIT_REF_NAME \
+        -t $DOCKER_TAG \
+        -t $DOCKER_TAG_BRANCH \
+        .
+      
+      echo "✓ Image built: $DOCKER_TAG"
+      
+    - echo "📤 Pushing Docker image..."
+    - docker push $DOCKER_TAG
+    - docker push $DOCKER_TAG_BRANCH
+    - echo "✓ Image pushed to registry"
+    
+    - echo "DOCKER_IMAGE=$DOCKER_TAG" >> build.env
+  artifacts:
+    reports:
+      dotenv: build.env
+  only:
+    - main
+    - uat
+    - develop
+    - /^(feature|bugfix|hotfix|release)\/.*/
+  allow_failure: false
+
+# ============================================================================
+# STAGE 4: DEPLOY TO HOTFIX TEST ENVIRONMENT
+# Special isolated environment for testing hotfixes before main merge
+# ============================================================================
+
+deploy:hotfix-test:
+  stage: deploy-hotfix-test
+  image: alpine:latest
+  environment:
+    name: hotfix-test
+    url: https://hotfix-test.example.com
+    deployment_tier: development
+    auto_stop_in: 24 hours  # Auto cleanup after 24h
+    kubernetes_namespace: hotfix-test
+  before_script:
+    - apk add --no-cache curl kubectl
+    - kubectl config use-context hotfix-test-cluster
+  script:
+    - echo "🔥 Deploying hotfix to isolated test environment..."
+    - echo "Image: $DOCKER_IMAGE"
+    - |
+      kubectl set image deployment/app \
+        app=$DOCKER_IMAGE \
+        -n hotfix-test \
+        --record
+    - echo "⏳ Waiting for rollout..."
+    - kubectl rollout status deployment/app -n hotfix-test --timeout=5m
+    - echo "✓ Hotfix deployed to test environment"
+    
+    # Health checks
+    - echo "🏥 Running health checks..."
+    - |
+      for i in {1..30}; do
+        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" https://hotfix-test.example.com/health)
+        if [ "$HTTP_CODE" = "200" ]; then
+          echo "✓ Health check passed"
+          break
+        else
+          echo "Attempt $i/30: Health check failed (HTTP $HTTP_CODE)"
+          sleep 10
+        fi
+      done
+    
+  only:
+    - /^hotfix\/prod\/.*/
+  when: on_success
+  allow_failure: false
+  variables:
+    DOCKER_IMAGE: !reference [build:docker, artifacts, reports, dotenv]
+
+# ============================================================================
+# STAGE 5: DEPLOY TO DEV
+# ============================================================================
+
+deploy:dev:
+  stage: deploy-dev
+  image: alpine:latest
+  environment:
+    name: development
+    url: https://dev.example.com
+    deployment_tier: development
+    kubernetes_namespace: dev
+  before_script:
+    - apk add --no-cache curl kubectl
+    - kubectl config use-context dev-cluster
+  script:
+    - echo "🚀 Deploying to Dev environment..."
+    - echo "Image: $DOCKER_IMAGE"
+    - |
+      kubectl set image deployment/app \
+        app=$DOCKER_IMAGE \
+        -n dev \
+        --record
+    - echo "⏳ Waiting for rollout..."
+    - kubectl rollout status deployment/app -n dev --timeout=5m
+    - echo "✓ Deployed to Dev"
+    
+    # Health checks
+    - echo "🏥 Running health checks..."
+    - |
+      for i in {1..10}; do
+        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" https://dev.example.com/health)
+        if [ "$HTTP_CODE" = "200" ]; then
+          echo "✓ Dev health check passed"
+          break
+        else
+          echo "Attempt $i/10: Health check (HTTP $HTTP_CODE)"
+          sleep 5
+        fi
+      done
+  only:
+    - develop
+  when: on_success
+  allow_failure: false
+
+# ============================================================================
+# STAGE 6: DEPLOY TO UAT
+# ============================================================================
+
+deploy:uat:
+  stage: deploy-uat
+  image: alpine:latest
+  environment:
+    name: staging
+    url: https://uat.example.com
+    deployment_tier: staging
+    kubernetes_namespace: uat
+  before_script:
+    - apk add --no-cache curl kubectl
+    - kubectl config use-context uat-cluster
+  script:
+    - echo "🚀 Deploying to UAT environment..."
+    - echo "Image: $DOCKER_IMAGE"
+    - |
+      kubectl set image deployment/app \
+        app=$DOCKER_IMAGE \
+        -n uat \
+        --record
+    - echo "⏳ Waiting for rollout..."
+    - kubectl rollout status deployment/app -n uat --timeout=5m
+    - echo "✓ Deployed to UAT"
+    
+    # Health checks
+    - echo "🏥 Running health checks..."
+    - |
+      for i in {1..10}; do
+        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" https://uat.example.com/health)
+        if [ "$HTTP_CODE" = "200" ]; then
+          echo "✓ UAT health check passed"
+          break
+        else
+          echo "Attempt $i/10: Health check (HTTP $HTTP_CODE)"
+          sleep 5
+        fi
+      done
+  only:
+    - uat
+  when: manual  # Manual approval before UAT deployment
+  allow_failure: false
+
+# ============================================================================
+# STAGE 7: DEPLOY TO PRODUCTION
+# ============================================================================
+
+deploy:prod:
+  stage: deploy-prod
+  image: alpine:latest
+  environment:
+    name: production
+    url: https://app.example.com
+    deployment_tier: production
+    kubernetes_namespace: prod
+  before_script:
+    - apk add --no-cache curl kubectl
+    - kubectl config use-context prod-cluster
+  script:
+    - echo "🚀 Deploying to Production environment..."
+    - echo "Image: $DOCKER_IMAGE"
+    - |
+      kubectl set image deployment/app \
+        app=$DOCKER_IMAGE \
+        -n prod \
+        --record
+    - echo "⏳ Waiting for rollout..."
+    - kubectl rollout status deployment/app -n prod --timeout=5m
+    - echo "✓ Deployed to Production"
+    
+    # Health checks
+    - echo "🏥 Running health checks..."
+    - |
+      for i in {1..20}; do
+        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" https://app.example.com/health)
+        if [ "$HTTP_CODE" = "200" ]; then
+          echo "✓ Production health check passed"
+          break
+        else
+          echo "Attempt $i/20: Health check (HTTP $HTTP_CODE)"
+          sleep 10
+        fi
+      done
+    
+    # Smoke tests
+    - echo "🧪 Running smoke tests..."
+    - npm ci
+    - npm run test:smoke:prod
+  only:
+    - main
+    - tags
+  when: manual  # ALWAYS manual approval for production
+  allow_failure: false
+
+# ============================================================================
+# STAGE 8: CLEANUP & BRANCH DELETION
+# ============================================================================
+
+cleanup:delete-feature-branch:
+  stage: cleanup
+  image: alpine:latest
+  before_script:
+    - *setup_git_credentials
+    - apk add --no-cache git
+  script:
+    - echo "🧹 Cleaning up feature branch..."
+    - git push origin --delete $CI_COMMIT_REF_NAME
+    - echo "✓ Branch deleted: $CI_COMMIT_REF_NAME"
+  only:
+    - /^feature\/.*/
+    - /^bugfix\/.*/
+    - /^revert\/.*/
+  when: on_success
+  allow_failure: true  # Don't fail if branch already deleted
+
+cleanup:delete-hotfix-branch:
+  stage: cleanup
+  image: alpine:latest
+  before_script:
+    - *setup_git_credentials
+    - apk add --no-cache git
+  script:
+    - echo "🧹 Cleaning up hotfix branch..."
+    - git push origin --delete $CI_COMMIT_REF_NAME
+    - echo "✓ Hotfix branch deleted: $CI_COMMIT_REF_NAME"
+    - |
+      # Also delete from local
+      git branch -D $CI_COMMIT_REF_NAME 2>/dev/null || true
+  only:
+    - /^hotfix\/.*/
+  when: on_success
+  allow_failure: true
+
+cleanup:delete-release-branch:
+  stage: cleanup
+  image: alpine:latest
+  before_script:
+    - *setup_git_credentials
+    - apk add --no-cache git
+  script:
+    - echo "🧹 Cleaning up release branch..."
+    - git push origin --delete $CI_COMMIT_REF_NAME
+    - echo "✓ Release branch deleted: $CI_COMMIT_REF_NAME"
+  only:
+    - /^release\/.*/
+  when: on_success
+  allow_failure: true
+
+# ============================================================================
+# STAGE 9: VERSION BUMPING & TAGGING (Auto-Semantic Versioning)
+# Runs AFTER successful deployment
+# ============================================================================
+
+version:bump-hotfix:
+  stage: version
+  image: alpine:latest
+  before_script:
+    - *setup_git_credentials
+    - apk add --no-cache git
+  script:
+    - echo "🔢 Bumping version for hotfix..."
+    - *get_latest_tag
+    - *extract_version_parts
+    
+    # Bump patch version for hotfix
+    - NEW_PATCH=$((PATCH + 1))
+    - NEW_TAG="v${MAJOR}.${MINOR}.${NEW_PATCH}"
+    - echo "📌 Creating tag: $NEW_TAG (bumped from $LATEST_TAG)"
+    
+    # Create annotated tag
+    - |
+      git tag -a "$NEW_TAG" -m "Hotfix release: $NEW_TAG
+
+      Hotfix: $CI_COMMIT_REF_NAME
+      Commit: $CI_COMMIT_SHA
+      Author: $GITLAB_USER_LOGIN
+      Date: $(date -u +'%Y-%m-%dT%H:%M:%SZ')
+      
+      Pipeline: $CI_PIPELINE_URL
+      Commit: $CI_PROJECT_URL/commit/$CI_COMMIT_SHA"
+    
+    # Push tag to origin
+    - git push origin "$NEW_TAG"
+    - echo "✓ Tag created and pushed: $NEW_TAG"
+    
+    # Create GitLab Release
+    - |
+      echo "📦 Creating GitLab Release..."
+      curl --request POST \
+        --header "PRIVATE-TOKEN: $CI_JOB_TOKEN" \
+        --header "Content-Type: application/json" \
+        --url "$CI_API_V4_URL/projects/$CI_PROJECT_ID/releases" \
+        --data '{
+          "tag_name":"'$NEW_TAG'",
+          "name":"Release '$NEW_TAG'",
+          "description":"Hotfix release from branch '$CI_COMMIT_REF_NAME'\n\nCommit: '$CI_COMMIT_SHA'",
+          "released_at":"'$(date -u +'%Y-%m-%dT%H:%M:%SZ')'",
+          "milestones":[]
+        }' || echo "Release may already exist"
+  only:
+    - /^hotfix\/prod\/.*/
+  when: on_success
+  allow_failure: false
+
+version:bump-release:
+  stage: version
+  image: alpine:latest
+  before_script:
+    - *setup_git_credentials
+    - apk add --no-cache git
+  script:
+    - echo "🔢 Bumping version for release..."
+    
+    # Extract version from branch name (release/v1.2.0)
+    - VERSION=${CI_COMMIT_REF_NAME##release/}
+    - echo "📌 Release version from branch: $VERSION"
+    
+    # Validate version format
+    - |
+      if ! [[ $VERSION =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "❌ Invalid version format: $VERSION"
+        exit 1
+      fi
+    
+    # Check if tag already exists
+    - |
+      if git rev-parse "$VERSION" >/dev/null 2>&1; then
+        echo "❌ Tag already exists: $VERSION"
+        exit 1
+      fi
+    
+    # Create annotated tag
+    - |
+      git tag -a "$VERSION" -m "Release: $VERSION
+
+      Release Branch: $CI_COMMIT_REF_NAME
+      Commit: $CI_COMMIT_SHA
+      Author: $GITLAB_USER_LOGIN
+      Date: $(date -u +'%Y-%m-%dT%H:%M:%SZ')
+      
+      Pipeline: $CI_PIPELINE_URL"
+    
+    # Push tag to origin
+    - git push origin "$VERSION"
+    - echo "✓ Tag created and pushed: $VERSION"
+    
+    # Create GitLab Release
+    - |
+      echo "📦 Creating GitLab Release..."
+      RELEASE_NOTES="## Release $VERSION\n\nRelease Date: $(date -u +'%Y-%m-%d %H:%M:%S UTC')\n\nCommit: $CI_COMMIT_SHA\n\nPipeline: $CI_PIPELINE_URL"
+      
+      curl --request POST \
+        --header "PRIVATE-TOKEN: $CI_JOB_TOKEN" \
+        --header "Content-Type: application/json" \
+        --url "$CI_API_V4_URL/projects/$CI_PROJECT_ID/releases" \
+        --data '{
+          "tag_name":"'$VERSION'",
+          "name":"Release '$VERSION'",
+          "description":"'$RELEASE_NOTES'",
+          "released_at":"'$(date -u +'%Y-%m-%dT%H:%M:%SZ')'",
+          "milestones":[]
+        }' || echo "Release may already exist"
+  only:
+    - /^release\/v[0-9]+\.[0-9]+\.[0-9]+$/
+  when: on_success
+  allow_failure: false
+
+version:report:
+  stage: version
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache git
+  script:
+    - git fetch --tags origin
+    - LATEST_TAG=$(git tag --list 'v*.*.*' --sort=-v:refname | head -n1)
+    - echo "📊 Latest version in repository: $LATEST_TAG"
+    - echo "VERSION_TAG=$LATEST_TAG" >> version.env
+  artifacts:
+    reports:
+      dotenv: version.env
+  only:
+    - main
+    - /^(hotfix|release)\/.*/
+  allow_failure: true
+
+# ============================================================================
+# NOTIFICATIONS & ALERTS
+# ============================================================================
+
+notify:deployment-success:
+  stage: version
+  image: curlimages/curl:latest
+  script:
+    - echo "📢 Sending deployment success notification..."
+    - |
+      curl -X POST "$SLACK_WEBHOOK_URL" \
+        -H 'Content-Type: application/json' \
+        -d '{
+          "text":"✅ Deployment Success",
+          "attachments":[
+            {
+              "color":"good",
+              "title":"Build #'$CI_PIPELINE_ID' - '$CI_COMMIT_REF_NAME'",
+              "text":"Environment: '$CI_ENVIRONMENT_NAME'\nCommit: '$CI_COMMIT_SHA'\nAuthor: '$GITLAB_USER_LOGIN'",
+              "actions":[
+                {
+                  "type":"button",
+                  "text":"View Pipeline",
+                  "url":"'$CI_PIPELINE_URL'"
+                }
+              ]
+            }
+          ]
+        }' || true
+  only:
+    - main
+    - uat
+    - develop
+  when: on_success
+  allow_failure: true
+
+notify:deployment-failure:
+  stage: version
+  image: curlimages/curl:latest
+  script:
+    - echo "📢 Sending deployment failure notification..."
+    - |
+      curl -X POST "$SLACK_WEBHOOK_URL" \
+        -H 'Content-Type: application/json' \
+        -d '{
+          "text":"❌ Deployment Failed",
+          "attachments":[
+            {
+              "color":"danger",
+              "title":"Build #'$CI_PIPELINE_ID' - '$CI_COMMIT_REF_NAME'",
+              "text":"Environment: '$CI_ENVIRONMENT_NAME'\nCommit: '$CI_COMMIT_SHA'\nAuthor: '$GITLAB_USER_LOGIN'",
+              "actions":[
+                {
+                  "type":"button",
+                  "text":"View Pipeline",
+                  "url":"'$CI_PIPELINE_URL'"
+                }
+              ]
+            }
+          ]
+        }' || true
+  when: on_failure
+  allow_failure: true
+```
+
+---
+
+## 4. Hotfix Testing Workflow (Step-by-Step)
+
+### **Complete Hotfix Lifecycle**
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│              HOTFIX COMPLETE WORKFLOW WITH TESTING                │
+└──────────────────────────────────────────────────────────────────┘
+
+PHASE 1: CREATE & ISOLATED TEST
+─────────────────────────────────
+
+Step 1a: Production issue detected
+  $ git checkout main
+  $ git pull origin main
+  $ git checkout -b hotfix/prod/JIRA-500-payment-crash
+
+Step 1b: Fix the issue locally
+  $ # Fix code...
+  $ git add src/payment/processor.js
+  $ git commit -m "JIRA-500: Fix payment processor crash
+
+  Root cause: Null pointer exception in amount validation
+  Fix: Added null check before processing
+  
+  Testing: Verified with test suite
+  Impact: Payment processing restored"
+
+Step 1c: Push hotfix branch (DO NOT CREATE MR YET)
+  $ git push origin hotfix/prod/JIRA-500-payment-crash
+
+Step 1d: Wait for pipeline
+  ✓ validate:branch-naming (auto)
+  ✓ validate:change-type (auto)
+  ✓ validate:lint (auto)
+  ✓ test:unit (auto)
+  ✓ test:integration (auto)
+  ✓ test:e2e (auto)
+  ✓ build:docker (auto)
+  ✓ deploy:hotfix-test (auto) ← ISOLATED TESTING HERE
+  
+  Pipeline runs on hotfix/prod/* branch
+  Deploys ONLY to hotfix-test environment
+  No impact on develop, uat, or main
+  
+  URL: https://hotfix-test.example.com
+  Auto-cleanup: After 24h
+
+
+PHASE 2: ISOLATED TESTING IN HOTFIX-TEST ENV
+──────────────────────────────────────────────
+
+Step 2a: QA tests hotfix in isolated environment
+  - Manual testing: Payment flow works
+  - Regression tests: Other payments not affected
+  - Smoke tests: System health OK
+  - Performance: No degradation
+  
+  Result: ✓ APPROVED FOR PRODUCTION
+
+Note: develop, uat still have their old version
+      No contamination during testing
+
+
+PHASE 3: MERGE & TAG FOR PRODUCTION
+────────────────────────────────────
+
+Step 3a: Create MR from GitLab UI
+  Source: hotfix/prod/JIRA-500-payment-crash
+  Target: main
+  Title: "JIRA-500: Fix payment processor crash"
+  Description: "Fixes critical production issue...
+    - Root cause: Null pointer exception
+    - Testing: Validated in hotfix-test env
+    - Risk: Low (minimal change)
+    - Rollback: Easy (revert commit)"
+  
+  Approvals required: 2 (leads + architect)
+
+Step 3b: MR checks
+  ✓ All tests pass (cached from branch build)
+  ✓ Code review: 2 approvals
+  ✓ No conflicts with main
+  ✓ Commits linked to Jira
+
+Step 3c: Merge to main
+  $ # Via GitLab UI - Click Merge
+  
+  GitLab actions:
+  - Merges hotfix/prod/JIRA-500 into main
+  - Runs version:bump-hotfix stage
+  - Detects latest tag: v1.2.3
+  - Bumps patch: v1.2.4
+  - Creates git tag: v1.2.4
+  - Creates GitLab Release
+  - Triggers build:docker
+  - Triggers deploy:prod (manual approval)
+
+
+PHASE 4: PRODUCTION DEPLOYMENT
+───────────────────────────────
+
+Step 4a: Production deployment approval
+  Pipeline waiting on: deploy:prod (manual approval)
+  
+  Deployment checklist:
+  ☑ All tests pass
+  ☑ QA approved in hotfix-test
+  ☑ 2 code reviews
+  ☑ Tag created: v1.2.4
+  ☑ Scheduled in maintenance window (not peak hours)
+  ☑ Rollback plan ready
+  ☑ On-call team notified
+
+Step 4b: Click "Approve" in GitLab
+  $ # Deploy button in pipeline UI
+  
+  Pipeline executes:
+  ✓ deploy:prod stage
+  ✓ Updates Kubernetes deployment
+  ✓ Runs health checks
+  ✓ Runs smoke tests
+  ✓ Verifies v1.2.4 running in prod
+
+Status: 🟢 HOTFIX LIVE IN PRODUCTION
+
+
+PHASE 5: PROPAGATE HOTFIX UP (merge-up strategy)
+─────────────────────────────────────────────────
+
+Step 5a: Create MR to UAT
+  Source: main (has v1.2.4 tag)
+  Target: uat
+  
+  Git operation: 
+  $ git checkout uat
+  $ git pull origin uat
+  $ git merge origin/main (gets v1.2.4)
+  
+  MR approval: 1 (standard)
+  Deploy: deploy:uat (manual trigger)
+
+Step 5b: Create MR to Develop
+  Source: main (or from uat)
+  Target: develop
+  
+  Git operation:
+  $ git checkout develop
+  $ git pull origin develop
+  $ git merge origin/main (or uat)
+  
+  MR approval: 1 (standard)
+  Deploy: deploy:dev (automatic on merge)
+
+Result:
+  main:    v1.2.4 (hotfix)
+  uat:     v1.2.4 (hotfix)
+  develop: v1.2.4 + other unreleased features
+
+
+PHASE 6: CLEANUP
+─────────────────
+
+Step 6a: Branch deletion (automatic)
+  GitLab cleanup:cleanup-hotfix-branch runs
+  - Deletes hotfix/prod/JIRA-500-payment-crash
+  
+  Or manual:
+  $ git push origin --delete hotfix/prod/JIRA-500-payment-crash
+
+Step 6b: Mark Jira issue
+  - Status: Closed/Done
+  - Resolution: Fixed in v1.2.4
+  - Added comment: "Fixed and deployed to production"
+  - Links: Link to GitLab release
+```
+
+---
+
+## 5. Environment Configuration & Variables
+
+```yaml name=.gitlab-ci.yml (environment setup section)
+# Add this to your .gitlab-ci.yml for environment-specific variables
+
+# ============================================================================
+# ENVIRONMENT-SPECIFIC VARIABLES
+# ============================================================================
+
+# Development Environment
+dev:env:
+  variables:
+    ENV_NAME: "development"
+    K8S_NAMESPACE: "dev"
+    K8S_CLUSTER: "dev-cluster"
+    APP_URL: "https://dev.example.com"
+    LOG_LEVEL: "debug"
+    FEATURE_FLAGS: "all_enabled"
+
+# UAT Environment
+uat:env:
+  variables:
+    ENV_NAME: "uat"
+    K8S_NAMESPACE: "uat"
+    K8S_CLUSTER: "uat-cluster"
+    APP_URL: "https://uat.example.com"
+    LOG_LEVEL: "info"
+    FEATURE_FLAGS: "stable_only"
+    DEPLOYMENT_APPROVAL: "required"
+
+# Production Environment
+prod:env:
+  variables:
+    ENV_NAME: "production"
+    K8S_NAMESPACE: "prod"
+    K8S_CLUSTER: "prod-cluster"
+    APP_URL: "https://app.example.com"
+    LOG_LEVEL: "warn"
+    FEATURE_FLAGS: "stable_only"
+    DEPLOYMENT_APPROVAL: "required"
+    ALERT_SLACK_CHANNEL: "#incidents"
+    REQUIRE_ROLLBACK_PLAN: "true"
+
+# Hotfix Test Environment (Isolated)
+hotfix-test:env:
+  variables:
+    ENV_NAME: "hotfix-test"
+    K8S_NAMESPACE: "hotfix-test"
+    K8S_CLUSTER: "dev-cluster"  # Uses dev cluster for cost savings
+    APP_URL: "https://hotfix-test.example.com"
+    LOG_LEVEL: "debug"
+    FEATURE_FLAGS: "all_enabled"
+    AUTO_CLEANUP_AFTER: "24h"
+    TEMPORARY_ENV: "true"
+```
+
+---
+
+## 6. Merge Request Templates
+
+### **Hotfix MR Template**
+
+```markdown name=.gitlab/merge_request_templates/Hotfix.md
+## 🔥 Hotfix MR
+
+**Jira Ticket:** [JIRA-XXX](https://jira.example.com/browse/JIRA-XXX)
+
+### Problem Statement
+<!-- Describe the production issue -->
+What is the problem?
+- [ ] User-facing bug
+- [ ] Data corruption
+- [ ] Performance degradation
+- [ ] Security vulnerability
+- [ ] System outage
+
+### Root Cause Analysis
+<!-- What caused this issue? -->
+
+
+### Solution
+<!-- What is the fix? -->
+
+
+### Testing
+- [ ] Fixed issue verified in hotfix-test environment
+- [ ] Regression tests passed
+- [ ] E2E tests passed
+- [ ] Smoke tests passed
+- [ ] No regressions in related features
+- [ ] Rollback procedure tested
+
+### Deployment Plan
+- [ ] Deployment time window: _____
+- [ ] Rollback time estimate: _____ minutes
+- [ ] On-call team notified: _____
+- [ ] Customer communication: [ ] Yes [ ] No
+
+### Checklist
+- [ ] Branch created from `main`
+- [ ] Code follows style guide
+- [ ] Commit messages reference JIRA ticket
+- [ ] No unrelated changes
+- [ ] Hotfix is minimal and focused
+
+### Merge Requirements
+- [ ] 2 approvals required
+- [ ] All tests passing
+- [ ] No conflicts with main
+- [ ] Hotfix branch deployment successful in hotfix-test environment
+```
+
+### **Release MR Template**
+
+```markdown name=.gitlab/merge_request_templates/Release.md
+## 📦 Release MR
+
+**Release Version:** v1.2.0
+
+### Release Contents
+<!-- What features and bugfixes are in this release? -->
+
+### Changes Summary
+- [ ] Feature 1: JIRA-123
+- [ ] Feature 2: JIRA-124
+- [ ] Bugfix 1: JIRA-125
+- [ ] Bugfix 2: JIRA-126
+
+### Testing
+- [ ] All unit tests passing
+- [ ] Integration tests passing
+- [ ] E2E tests passing
+- [ ] UAT sign-off obtained
+- [ ] Performance testing completed
+- [ ] Security scan passed
+
+### Release Checklist
+- [ ] Version bumped in package.json
+- [ ] CHANGELOG.md updated
+- [ ] Release notes prepared
+- [ ] Database migrations tested (if applicable)
+- [ ] Breaking changes documented (if applicable)
+- [ ] Deployment guide updated
+
+### Deployment Plan
+- [ ] Scheduled deployment date/time: _____
+- [ ] Rollback plan documented: _____
+- [ ] Customer communication sent: _____
+```
+
+### **Bugfix MR Template**
+
+```markdown name=.gitlab/merge_request_templates/Bugfix.md
+## 🐛 Bugfix MR
+
+**Jira Ticket:** [JIRA-XXX](https://jira.example.com/browse/JIRA-XXX)
+
+### Issue Description
+<!-- Describe the bug -->
+
+
+### Root Cause
+<!-- Why did this bug occur? -->
+
+
+### Solution
+<!-- How is the bug fixed? -->
+
+
+### Testing
+- [ ] Unit tests added/updated
+- [ ] Bug reproduction fixed
+- [ ] Related functionality tested
+- [ ] No regressions
+
+### Checklist
+- [ ] Code follows style guide
+- [ ] Commit messages reference JIRA
+- [ ] Tests added for fix
+- [ ] Documentation updated (if needed)
+```
+
+---
+
+## 7. Pipeline Validation Strategy
+
+### **Change Type Validation Matrix**
+
+```yaml name=validation-matrix.yaml
+Validation Rules by Change Type:
+
+FEATURE Branch (feature/JIRA-*):
+  Branch Rules:
+    - Must branch from: develop
+    - MR target: develop
+    - Pattern: ^feature/[A-Z]+-[0-9]+-.*
+    - Lifetime: Until merged
+  
+  Pipeline Checks:
+    ✓ Branch naming: REQUIRED
+    ✓ Change type detection: REQUIRED
+    ✓ Lint: REQUIRED
+    ✓ Unit tests: REQUIRED
+    ✓ Integration tests: REQUIRED
+    ✓ E2E tests: OPTIONAL (not for all features)
+    ✓ Build Docker: REQUIRED
+    ✓ Deploy to Dev: AUTOMATIC (after merge to develop)
+    ✓ Version bump: NONE (done in release)
+    ✓ Auto-cleanup: YES (delete branch after merge)
+  
+  Approval: 1+ approvals
+  Version: Not versioned individually
+  Deployment: Dev only
+  Hotfix Eligible: NO
+
+BUGFIX Branch (bugfix/dev or bugfix/uat):
+  Branch Rules:
+    - Must branch from: develop (for dev bugs) or uat (for uat bugs)
+    - MR target: Source environment + merge up
+    - Pattern: ^bugfix/(dev|uat)/[A-Z]+-[0-9]+-.*
+    - Lifetime: Until merged + propagated
+  
+  Pipeline Checks:
+    ✓ Branch naming: REQUIRED
+    ✓ Change type detection: REQUIRED
+    ✓ Lint: REQUIRED
+    ✓ Unit tests: REQUIRED
+    ✓ Integration tests: REQUIRED
+    ✓ E2E tests: REQUIRED
+    ✓ Build Docker: REQUIRED
+    ✓ Deploy to env: AUTOMATIC
+    ✓ Version bump: NONE
+    ✓ Auto-cleanup: YES (after merge + propagation)
+  
+  Approval: 1+ approvals
+  Version: Not versioned
+  Deployment: Environment where bug found
+  Hotfix Eligible: NO
+  
+  Rule: After merge to source env, MUST merge-up to next env
+
+HOTFIX Branch (hotfix/prod/JIRA-*):
+  Branch Rules:
+    - Must branch from: main ONLY
+    - MR target: main → uat → develop
+    - Pattern: ^hotfix/prod/[A-Z]+-[0-9]+-.*
+    - Lifetime: Until prod deployment + cleanup
+  
+  Pipeline Checks:
+    ✓ Branch naming: REQUIRED
+    ✓ Change type detection: REQUIRED (verify main origin)
+    ✓ Commit messages: REQUIRED (Jira ref)
+    ✓ Lint: REQUIRED
+    ✓ Unit tests: REQUIRED
+    ✓ Integration tests: REQUIRED
+    ✓ E2E tests: REQUIRED
+    ✓ Security scan: REQUIRED
+    ✓ Build Docker: REQUIRED
+    ✓ Deploy to hotfix-test: AUTOMATIC (isolated env)
+    ✓ Deploy to Prod: MANUAL (requires approval)
+    ✓ Version bump: AUTOMATIC (patch increment)
+    ✓ Git tag creation: AUTOMATIC (after main merge)
+    ✓ GitLab Release: AUTOMATIC
+    ✓ Auto-cleanup: YES (delete after prod merge)
+  
+  Approval: 2+ approvals (leads + security)
+  Version: YES - Auto-bumped (v1.2.3 → v1.2.4)
+  Deployment: hotfix-test → Prod (manual trigger)
+  Hotfix Eligible: YES (this is hotfix)
+  
+  Critical Rules:
+    - Must NOT merge to develop/uat directly
+    - Must test in hotfix-test env first
+    - Must merge to main before any other env
+    - Hotfix-test env auto-cleanup after 24h
+    - NO develop or UAT contamination
+
+RELEASE Branch (release/v1.2.0):
+  Branch Rules:
+    - Must branch from: develop
+    - MR target: main → uat → develop
+    - Pattern: ^release/v[0-9]+\.[0-9]+\.[0-9]+$
+    - Lifetime: Until all merges complete + cleanup
+  
+  Pipeline Checks:
+    ✓ Branch naming: REQUIRED (strict version format)
+    ✓ Version format validation: REQUIRED
+    ✓ Commit messages: REQUIRED
+    ✓ Lint: REQUIRED
+    ✓ Unit tests: REQUIRED
+    ✓ Integration tests: REQUIRED
+    ✓ E2E tests: REQUIRED
+    ✓ Security scan: REQUIRED
+    ✓ Build Docker: REQUIRED
+    ✓ Deploy to Prod: MANUAL (requires approval)
+    ✓ Version bump: NONE (version from branch name)
+    ✓ Git tag creation: AUTOMATIC (v1.2.0)
+    ✓ GitLab Release: AUTOMATIC
+    ✓ Auto-cleanup: YES (delete after main merge)
+  
+  Approval: 2+ approvals
+  Version: YES - From branch name
+  Deployment: Prod (scheduled/manual)
+  Hotfix Eligible: NO
+  
+  Rules:
+    - Version MUST NOT already exist as tag
+    - Version MUST match develop state
+    - Bump version in package.json before merge
+    - Update CHANGELOG before merge
+
+OTHER Branches (develop, main, uat):
+  These are protected branches - no direct pushes
+  Only MRs allowed
+  Special rules apply for each
+```
+
+---
+
+## 8. CLI Commands Reference
+
+### **Developer Quick Commands**
+
+```bash
+# ========== FEATURE WORKFLOW ==========
+
+# Create feature
+git checkout develop
+git pull origin develop
+git checkout -b feature/JIRA-123-add-payment-gateway
+git push origin feature/JIRA-123-add-payment-gateway
+# → Go to GitLab, create MR to develop
+
+# After approval & merge, feature auto-deploys to dev
+# Auto-delete happens in cleanup stage
+
+
+# ========== BUGFIX WORKFLOW ==========
+
+# Bug in Dev (originate from develop)
+git checkout develop
+git pull origin develop
+git checkout -b bugfix/dev/JIRA-124-login-timeout
+git push origin bugfix/dev/JIRA-124-login-timeout
+# → Create MR to develop
+# → After merge, also create MR to uat (merge-up)
+# → After uat merge, auto-propagate to main (via release)
+
+# Bug in UAT (originate from uat)
+git checkout uat
+git pull origin uat
+git checkout -b bugfix/uat/JIRA-125-report-export-crash
+git push origin bugfix/uat/JIRA-125-report-export-crash
+# → Create MR to uat
+# → After merge, create MR to develop (don't go to main)
+
+# Bug in Prod (shouldn't happen - use hotfix instead)
+
+
+# ========== HOTFIX WORKFLOW ==========
+
+# Create hotfix FROM MAIN (critical fix)
+git checkout main
+git pull origin main
+git checkout -b hotfix/prod/JIRA-500-payment-crash
+# → Fix the issue
+git add .
+git commit -m "JIRA-500: Fix payment crash
+
+Root cause: null pointer in amount validation
+Fix: Added null check"
+git push origin hotfix/prod/JIRA-500-payment-crash
+
+# Pipeline auto-runs:
+# - Validation checks
+# - Tests (unit, integration, e2e)
+# - Build Docker
+# - Deploy to hotfix-test (isolated)
+# - Wait for approval
+
+# Once tested in hotfix-test env, create MR
+# GitLab → New MR: hotfix/prod/... → main
+# Get 2 approvals
+# Merge (auto-runs version bump, tagging, prod deploy)
+
+
+# ========== RELEASE WORKFLOW ==========
+
+# Prepare release
+git checkout develop
+git pull origin develop
+git checkout -b release/v1.2.0
+
+# Bump version
+npm version minor  # Updates package.json
+
+# Update changelog
+# vim CHANGELOG.md
+
+git add package.json package-lock.json CHANGELOG.md
+git commit -m "Bump version to v1.2.0"
+git push origin release/v1.2.0
+
+# GitLab → New MR: release/v1.2.0 → main
+# Get 2 approvals
+# Merge (auto-runs: tag v1.2.0, deploy to prod)
+
+# Then manually create:
+# MR: main → uat
+# MR: uat → develop
+
+
+# ========== TAG MANAGEMENT ==========
+
+# List all tags
+git tag -l 'v*.*.*' --sort=-v:refname
+
+# View latest tag
+git describe --tags --abbrev=0
+
+# View specific tag
+git show v1.2.3
+
+# Delete local tag
+git tag -d v1.2.3
+
+# Delete remote tag (CAREFUL!)
+git push origin --delete v1.2.3
+
+
+# ========== BRANCH CLEANUP ==========
+
+# List local branches
+git branch -a
+
+# Delete local branch
+git branch -d hotfix/prod/JIRA-500-payment-crash
+
+# Delete remote branch (automatic in cleanup stage, or manually)
+git push origin --delete hotfix/prod/JIRA-500-payment-crash
+
+# Clean up all deleted remote branches locally
+git fetch --prune origin
+
+
+# ========== MERGE CONFLICTS ==========
+
+# Update branch with latest develop
+git checkout feature/JIRA-123
+git fetch origin
+git rebase origin/develop
+# Fix conflicts if any
+git add .
+git rebase --continue
+git push origin feature/JIRA-123 --force-with-lease (careful!)
+
+# Or merge instead of rebase
+git merge origin/develop
+# Fix conflicts
+git add .
+git commit -m "Merge develop into feature"
+git push origin feature/JIRA-123
+
+
+# ========== ROLLBACK ==========
+
+# Revert specific commit (creates new commit that undoes it)
+git revert abc123def456
+git push origin hotfix/JIRA-1001-rollback
+
+# Revert entire release/hotfix
+git log --oneline | grep "Release v1.2.0"
+# Find merge commit hash
+git revert -m 1 <merge-commit-hash>
+git push origin revert/v1.2.0-rollback
+
+# Check git log before reverting
+git log --oneline -20
+git log --graph --oneline --all -20
+
+```
+
+---
+
+## 9. Protected Branch Configuration (GitLab Settings)
+
+```yaml name=gitlab-branch-protection-rules.yaml
+# Settings → Repository → Protected branches
+
+Protected Branches Configuration:
+
+main (Production):
+  Protected: YES
+  Allowed to merge:
+    - Maintainers only
+    - CI pipeline must succeed
+  Allowed to push:
+    - No one (code review only via MR)
+  Require approval from code owners: YES
+  Dismiss stale approvals: YES
+  Require pipeline to succeed: YES
+  Require approval before deploying: YES
+  Allow force push: NO
+  Allow deletion: NO
+  Require signed commits: YES
+  Require merge request: YES
+  Minimum approvals: 2
+
+uat (User Acceptance Testing):
+  Protected: YES
+  Allowed to merge:
+    - Maintainers
+    - QA leads
+  Allowed to push:
+    - No one
+  Require approval from code owners: NO
+  Dismiss stale approvals: YES
+  Require pipeline to succeed: YES
+  Require approval before deploying: NO (manual trigger in pipeline)
+  Allow force push: NO
+  Allow deletion: NO
+  Require signed commits: NO
+  Require merge request: YES
+  Minimum approvals: 1
+
+develop (Development):
+  Protected: YES
+  Allowed to merge:
+    - Developers
+    - Maintainers
+  Allowed to push:
+    - No one
+  Require approval from code owners: NO
+  Dismiss stale approvals: YES
+  Require pipeline to succeed: YES
+  Require approval before deploying: NO
+  Allow force push: NO
+  Allow deletion: NO
+  Require signed commits: NO
+  Require merge request: YES
+  Minimum approvals: 1
+
+release/* (Release branches - MODERATE):
+  Protected: NO (can be created/deleted freely)
+  OR
+  Protected: YES with relaxed rules:
+    - Allowed to merge: Maintainers
+    - Minimum approvals: 1
+    - Allow force push: YES (for version bumps)
+
+hotfix/prod/* (Hotfix branches - MODERATE):
+  Protected: NO (automatic cleanup after merge)
+  Auto-delete source branch: YES
+
+feature/* (Feature branches - UNPROTECTED):
+  Protected: NO (created and deleted freely)
+  Auto-delete source branch: YES (after merge)
+
+bugfix/* (Bugfix branches - UNPROTECTED):
+  Protected: NO
+  Auto-delete source branch: YES
+
+# Code Owners File (.gitlab/CODEOWNERS)
+# File paths mapped to required reviewers
+
+README.md @team-lead
+src/payment/ @payment-team @senior-dev
+src/auth/ @security-team @auth-owner
+.gitlab-ci.yml @devops-team @ci-lead
+CHANGELOG.md @product-manager @team-lead
+```
+
+---
+
+## 10. Complete Example: Hotfix End-to-End
+
+### **Real-World Scenario**
+
+```
+Production Issue: Payment processing down at 2 PM
+Current versions:
+  - main (prod): v1.2.3
+  - uat: v1.2.3
+  - develop: v1.2.3 + 5 unreleased features
+
+Action Plan:
+1. Create hotfix from main
+2. Test in isolated hotfix-test env
+3. Merge to main with 2 approvals
+4. Auto-tag v1.2.4
+5. Deploy to prod
+6. Propagate to uat/develop
+7. Cleanup
+```
+
+### **Step-by-Step Commands**
+
+```bash
+# Step 1: Create hotfix branch at 2:05 PM
+cd ~/project
+git fetch origin
+git checkout main
+git pull origin main
+
+# Verify we're on main
+git log --oneline -1
+# Output: abc1234 Merge hotfix/prod/JIRA-498-memory-leak v1.2.3
+
+git checkout -b hotfix/prod/JIRA-500-payment-crash
+
+# Step 2: Fix the issue (2:10 PM)
+# File: src/payment/processor.js
+# Issue: Null pointer in amount validation (missing null check)
+
+cat > src/payment/processor.js << 'EOF'
+export async function processPayment(amount, account) {
+  // FIX: Added null/undefined checks
+  if (!amount || amount <= 0) {
+    throw new PaymentError('Invalid amount');
+  }
+  
+  if (!account || !account.id) {
+    throw new PaymentError('Invalid account');
+  }
+  
+  // Original logic
+  return await submitToGateway(amount, account.id);
+}
+EOF
+
+git add src/payment/processor.js
+git status
+# Output:
+# On branch hotfix/prod/JIRA-500-payment-crash
+# Changes to be committed:
+#   modified: src/payment/processor.js
+
+# Step 3: Commit with Jira reference (2:15 PM)
+git commit -m "JIRA-500: Fix payment processor crash
+
+Root cause: Null pointer exception in processPayment function
+  - Missing null/undefined check for amount parameter
+  - Missing null/undefined check for account parameter
+
+Fix: Add validation before processing
+  - Check amount is valid number > 0
+  - Check account exists and has ID
+
+Testing: Verified with existing payment tests
+Impact: Minimal (only adds validation checks)
+Risk: Low (existing tests cover this path)"
+
+# Verify commit
+git log --oneline -1
+# Output: def5678 JIRA-500: Fix payment processor crash
+
+# Step 4: Push to GitLab (2:20 PM)
+git push origin hotfix/prod/JIRA-500-payment-crash
+
+# Step 5: Wait for pipeline (2:20 - 2:35 PM)
+# GitLab automatically starts pipeline:
+
+# Validation stage (2:21 PM):
+#   ✓ validate:branch-naming (12s) ← Checks "hotfix/prod/" pattern
+#   ✓ validate:change-type (8s) ← Detects HOTFIX type
+#   ✓ validate:lint (45s) ← npm run lint passes
+#   ✓ validate:security-scan (120s) ← npm audit passes
+
+# Test stage (2:25 PM):
+#   ✓ test:unit (180s) ← All 523 tests pass, 89% coverage
+#   ✓ test:integration (240s) ← All payment integration tests pass
+#   ✓ test:e2e (300s) ← E2E payment flow passes
+
+# Build stage (2:35 PM):
+#   ✓ build:docker (200s) ← Image built: registry.gitlab.com/company/app:def5678
+#   ✓
+
+## @techenthu23
+
+/continue
+
+## Copilot
+
+# Step 6: Isolated Testing in hotfix-test Environment (2:37 PM)
+
+```
+Deploy stage (2:37 PM):
+  ✓ deploy:hotfix-test (120s)
+    - Deployed to https://hotfix-test.example.com
+    - Health checks: ✓ PASSED
+    - Auto-cleanup scheduled: 24 hours
+    - Environment accessible for QA testing
+
+Pipeline Status: ✓ PASSED (All stages successful)
+Duration: ~20 minutes total
+
+# Step 7: Manual QA Testing in hotfix-test (2:40 - 3:00 PM)
+
+# QA Team tests in https://hotfix-test.example.com
+Test Cases:
+  ✓ Login: Works
+  ✓ Add to cart: Works
+  ✓ Proceed to checkout: Works
+  ✓ Valid payment: ✓ WORKS (was broken, now fixed)
+  ✓ Invalid amount (0): ✓ Properly rejected
+  ✓ Null account: ✓ Properly rejected
+  ✓ Other features: ✓ No regressions
+  ✓ Performance: ✓ No degradation
+  ✓ Error messages: ✓ Clear and helpful
+
+QA Sign-off: ✓ APPROVED FOR PRODUCTION (3:00 PM)
+
+Critical: develop and uat branches are UNAFFECTED during this testing
+         No contamination, clean isolation
+
+# Step 8: Create Merge Request to main (3:05 PM)
+
+# GitLab UI: New Merge Request
+# Source: hotfix/prod/JIRA-500-payment-crash
+# Target: main
+
+MR Title: "JIRA-500: Fix payment processor crash"
+
+MR Description:
+```
+## 🔥 Production Hotfix
+
+**Jira:** [JIRA-500](https://jira.example.com/browse/JIRA-500)
+
+**Severity:** CRITICAL - Payment processing down
+
+### Problem
+Payment processor returning null pointer exception during checkout, 
+blocking all payment processing. ~500+ transactions affected.
+
+### Root Cause
+Missing null/undefined validation in `processPayment()` function
+when receiving malformed requests.
+
+### Solution
+Added validation checks for amount and account parameters before processing.
+
+### Testing
+- ✓ Unit tests: All 523 tests pass (89% coverage)
+- ✓ Integration tests: Payment flow tests pass
+- ✓ E2E tests: Full checkout flow tested
+- ✓ Hotfix-test environment: QA approved (3:00 PM)
+- ✓ Regressions: None detected
+- ✓ Performance: No impact
+
+### Deployment
+- Hottest environment: ✓ DEPLOYED & TESTED
+- Target: Production
+- Risk: LOW (minimal change, existing test coverage)
+- Rollback: Simple revert if needed
+
+### Merge Plan
+1. Merge to main (after 2 approvals)
+2. Auto-create git tag: v1.2.4
+3. Auto-deploy to production (manual trigger)
+4. Propagate to uat and develop
+5. Auto-cleanup branch
+```
+
+# Step 9: Code Review & Approvals (3:05 - 3:20 PM)
+
+# Approver 1: Senior Developer
+Review: ✓ APPROVED (3:10 PM)
+Comment: "Fix looks good, minimal change with proper validation"
+
+# Approver 2: Tech Lead
+Review: ✓ APPROVED (3:15 PM)
+Comment: "Approved for urgent hotfix. Escalate to on-call after merge."
+
+# MR Status: ✓ READY TO MERGE
+- Approvals: 2/2 ✓
+- Tests: All passing ✓
+- No conflicts: ✓
+- Branch: hotfix/prod/JIRA-500-payment-crash ✓
+
+# Step 10: Merge to main (3:20 PM)
+
+# GitLab UI: Click "Merge" button
+
+Git operations (automatic):
+  1. Merge hotfix/prod/JIRA-500 into main
+  2. Create merge commit
+  3. Push to origin/main
+
+Pipeline automatically starts after merge:
+
+Validation stage (3:21 PM):
+  ✓ validate:branch-naming
+  ✓ validate:change-type
+  ✓ validate:lint
+  ✓ validate:security-scan
+
+Test stage (3:25 PM):
+  ✓ test:unit
+  ✓ test:integration
+  ✓ test:e2e
+
+Build stage (3:35 PM):
+  ✓ build:docker
+    Image: registry.gitlab.com/company/app:abc9999
+
+# Step 11: AUTO-VERSION BUMPING (3:40 PM)
+
+version:bump-hotfix stage automatically runs:
+
+```bash
+# Get latest tag
+git fetch --tags origin
+LATEST_TAG=$(git tag -l 'v*.*.*' --sort=-v:refname | head -1)
+# Output: v1.2.3
+
+# Extract version parts
+MAJOR=1, MINOR=2, PATCH=3
+
+# Bump patch for hotfix
+NEW_PATCH=$((3 + 1))  # 4
+NEW_TAG="v1.2.4"
+
+echo "Creating tag: v1.2.4"
+
+# Create annotated tag
+git tag -a v1.2.4 -m "Hotfix release: v1.2.4
+
+Hotfix: hotfix/prod/JIRA-500-payment-crash
+Commit: abc9999def1111
+Author: senior-dev
+Date: 2026-02-07T15:40:00Z
+
+Pipeline: https://gitlab.com/company/app/-/pipelines/12345
+Commit: https://gitlab.com/company/app/-/commit/abc9999def1111"
+
+# Push tag to origin
+git push origin v1.2.4
+
+# Create GitLab Release
+curl --request POST \
+  --header "PRIVATE-TOKEN: $CI_JOB_TOKEN" \
+  --header "Content-Type: application/json" \
+  --url "https://gitlab.com/api/v4/projects/12345/releases" \
+  --data '{
+    "tag_name":"v1.2.4",
+    "name":"Release v1.2.4",
+    "description":"Hotfix release from branch hotfix/prod/JIRA-500-payment-crash\n\nCommit: abc9999def1111",
+    "released_at":"2026-02-07T15:40:00Z"
+  }'
+```
+
+Output:
+```
+✓ Tag created: v1.2.4
+✓ Tag pushed to origin
+✓ GitLab Release created
+✓ Release notes available in GitLab UI
+```
+
+# Step 12: PRODUCTION DEPLOYMENT (3:45 PM - Waiting for Approval)
+
+Pipeline shows: **deploy:prod** stage waiting for manual approval
+
+Deployment checklist before approval:
+  ✓ All tests pass
+  ✓ QA approved in hotfix-test
+  ✓ 2 code reviews obtained
+  ✓ Git tag created: v1.2.4
+  ✓ In maintenance window? YES (15:45 UTC, off-peak)
+  ✓ On-call team notified? YES
+  ✓ Rollback plan ready? YES (revert to v1.2.3)
+  ✓ Database migrations needed? NO
+  ✓ Config changes needed? NO
+
+# Step 13: Approve Production Deployment (3:50 PM)
+
+# Operations/Deployment team clicks "Approve" in GitLab Pipeline
+
+Pipeline executes deploy:prod stage:
+
+```bash
+# Deployment script runs
+
+echo "🚀 Deploying to Production environment..."
+
+# Get image
+DOCKER_IMAGE="registry.gitlab.com/company/app:abc9999"
+
+# Deploy to Kubernetes
+kubectl set image deployment/app \
+  app=$DOCKER_IMAGE \
+  -n prod \
+  --record
+
+echo "⏳ Waiting for rollout to complete..."
+kubectl rollout status deployment/app -n prod --timeout=5m
+
+# Output: deployment "app" successfully rolled out
+
+echo "🏥 Running health checks..."
+
+# Health check loop (30 attempts, 10s interval)
+for i in {1..30}; do
+  HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" https://app.example.com/health)
+  if [ "$HTTP_CODE" = "200" ]; then
+    echo "✓ Production health check passed"
+    break
+  else
+    echo "Attempt $i/30: Health check (HTTP $HTTP_CODE), retrying..."
+    sleep 10
+  fi
+done
+
+# Smoke tests
+npm run test:smoke:prod
+# Output: All smoke tests passed
+
+echo "✓ Deployment to Production complete"
+```
+
+Deployment Results:
+- Start time: 3:50 PM
+- Rollout complete: 3:52 PM
+- Health checks passed: 3:52 PM
+- Smoke tests passed: 3:55 PM
+- **Status: ✓ LIVE IN PRODUCTION**
+
+Verification:
+  ✓ https://app.example.com/health returns 200 OK
+  ✓ Payment processing works
+  ✓ Test transaction successful
+  ✓ Version endpoint shows v1.2.4
+
+# Step 14: Notification (3:55 PM)
+
+Slack notification sent:
+```
+✅ Production Deployment Success
+
+Build #98765 - hotfix/prod/JIRA-500-payment-crash
+Environment: production
+Commit: abc9999def1111
+Author: senior-dev
+
+Version: v1.2.4
+Status: LIVE
+Deployment time: 5 minutes
+Rollback: git revert to v1.2.3
+```
+
+# Step 15: Merge to UAT (4:00 PM)
+
+Now that hotfix is confirmed in production, propagate up to UAT
+
+```bash
+# Create MR to uat branch
+# Source: main (now has v1.2.4)
+# Target: uat
+# Title: "JIRA-500: Propagate hotfix v1.2.4 to UAT"
+```
+
+GitLab UI: New MR
+- Source: main
+- Target: uat
+- Description: "Hotfix v1.2.4 propagation after successful production deployment"
+
+Pipeline runs same checks, then:
+- deploy:uat (manual trigger)
+- Click approve
+- Hotfix deployed to UAT
+
+# Step 16: Merge to Develop (4:15 PM)
+
+Propagate to develop branch
+
+```bash
+# Create MR to develop
+# Source: uat (or main)
+# Target: develop
+# Title: "JIRA-500: Propagate hotfix v1.2.4 to develop"
+```
+
+Pipeline runs, then:
+- deploy:dev (automatic on merge)
+- Hotfix auto-deployed to dev
+
+Result:
+```
+main:    v1.2.4 (hotfix)
+uat:     v1.2.4 (hotfix)
+develop: v1.2.4 + 5 unreleased features (unchanged)
+```
+
+Develop is NOT contaminated with unreleased feature changes!
+
+# Step 17: Cleanup (4:30 PM)
+
+Pipeline cleanup stage runs automatically:
+
+```bash
+cleanup:delete-hotfix-branch stage:
+
+git push origin --delete hotfix/prod/JIRA-500-payment-crash
+
+# Output: ✓ Branch deleted: hotfix/prod/JIRA-500-payment-crash
+```
+
+Also auto-cleanup hotfix-test environment after 24 hours
+(scheduled for 2:37 AM next day)
+
+# FINAL STATUS (4:30 PM - 2 hours 25 minutes after issue)
+
+✓ Issue detected: 2:00 PM
+✓ Hotfix created: 2:05 PM
+✓ Fix implemented: 2:15 PM
+✓ Push to GitLab: 2:20 PM
+✓ Pipeline passed: 2:40 PM
+✓ QA testing: 2:40 - 3:00 PM
+✓ MR created: 3:05 PM
+✓ Approvals: 3:15 PM
+✓ Merged to main: 3:20 PM
+✓ Version bumped: 3:40 PM (v1.2.3 → v1.2.4)
+✓ Deployed to prod: 3:55 PM ← **LIVE**
+✓ Propagated to uat: 4:00 PM
+✓ Propagated to develop: 4:15 PM
+✓ Cleanup: 4:30 PM
+
+TOTAL TIME TO PRODUCTION: ~2.5 hours
+
+Key Benefits Achieved:
+1. ✓ Hotfix tested in isolated environment (NO contamination)
+2. ✓ develop branch remained clean during testing
+3. ✓ uat branch remained clean during testing
+4. ✓ Automatic semantic versioning (v1.2.4)
+5. ✓ Full audit trail via git tags and commits
+6. ✓ Automatic release notes
+7. ✓ Safe rollback possible (v1.2.3)
+8. ✓ All tests passing before each stage
+9. ✓ Merge-up strategy maintains consistency
+10. ✓ Automatic cleanup of branches
+```
+
+---
+
+## 11. Change Type Detection Script
+
+Add this to your repository to help validate change types:
+
+```bash name=scripts/validate-change-type.sh
+#!/bin/bash
+
+# validate-change-type.sh
+# Validates that a branch matches expected change type rules
+
+set -e
+
+BRANCH=$1
+COMMIT_SHA=$2
+
+if [ -z "$BRANCH" ]; then
+  echo "Usage: $0 <branch-name> [commit-sha]"
+  exit 1
+fi
+
+# Color output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+echo -e "${BLUE}═════════════════════════════════════════${NC}"
+echo -e "${BLUE}Change Type Validator${NC}"
+echo -e "${BLUE}═════════════════════════════════════════${NC}"
+echo "Branch: $BRANCH"
+echo "Commit: ${COMMIT_SHA:0:8}"
+
+# Detect change type
+if [[ $BRANCH =~ ^feature/ ]]; then
+  CHANGE_TYPE="FEATURE"
+  RULE_SOURCE="develop"
+  RULE_TARGET="develop"
+  RULE_VERSION="Not versioned (MINOR in release)"
+  RULE_APPROVAL="1+ approvals"
+  RULE_DEPLOYMENT="Dev (auto on merge)"
+
+elif [[ $BRANCH =~ ^bugfix/dev/ ]]; then
+  CHANGE_TYPE="BUGFIX (Dev)"
+  RULE_SOURCE="develop"
+  RULE_TARGET="develop + merge-up"
+  RULE_VERSION="Not versioned"
+  RULE_APPROVAL="1+ approvals"
+  RULE_DEPLOYMENT="Dev"
+
+elif [[ $BRANCH =~ ^bugfix/uat/ ]]; then
+  CHANGE_TYPE="BUGFIX (UAT)"
+  RULE_SOURCE="uat"
+  RULE_TARGET="uat + develop"
+  RULE_VERSION="Not versioned"
+  RULE_APPROVAL="1+ approvals"
+  RULE_DEPLOYMENT="UAT"
+
+elif [[ $BRANCH =~ ^hotfix/prod/ ]]; then
+  CHANGE_TYPE="HOTFIX"
+  RULE_SOURCE="main (CRITICAL)"
+  RULE_TARGET="main → uat → develop"
+  RULE_VERSION="Auto-bumped (PATCH)"
+  RULE_APPROVAL="2+ approvals (REQUIRED)"
+  RULE_DEPLOYMENT="hotfix-test (isolated) → Prod (manual)"
+
+elif [[ $BRANCH =~ ^release/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  CHANGE_TYPE="RELEASE"
+  VERSION=${BRANCH##release/}
+  RULE_SOURCE="develop"
+  RULE_TARGET="main → uat → develop"
+  RULE_VERSION="From branch name ($VERSION)"
+  RULE_APPROVAL="2+ approvals"
+  RULE_DEPLOYMENT="Prod (scheduled/manual)"
+
+else
+  echo -e "${RED}✗ INVALID branch name: $BRANCH${NC}"
+  echo ""
+  echo "Valid patterns:"
+  echo "  - feature/JIRA-123-description"
+  echo "  - bugfix/dev/JIRA-124-description"
+  echo "  - bugfix/uat/JIRA-125-description"
+  echo "  - hotfix/prod/JIRA-500-description"
+  echo "  - release/v1.2.0"
+  exit 1
+fi
+
+# Display results
+echo ""
+echo -e "${GREEN}✓ Branch type detected: ${CHANGE_TYPE}${NC}"
+echo ""
+echo "Rules for ${CHANGE_TYPE}:"
+echo "  Source branch:    $RULE_SOURCE"
+echo "  Target (MR):      $RULE_TARGET"
+echo "  Versioning:       $RULE_VERSION"
+echo "  Approvals:        $RULE_APPROVAL"
+echo "  Deployment:       $RULE_DEPLOYMENT"
+echo ""
+
+# Additional validation for hotfix
+if [ "$CHANGE_TYPE" = "HOTFIX" ]; then
+  echo -e "${YELLOW}⚠ HOTFIX Validation:${NC}"
+  
+  # Check if branch is based on main
+  MERGE_BASE=$(git merge-base origin/main $BRANCH 2>/dev/null || echo "")
+  if [ -z "$MERGE_BASE" ]; then
+    echo "  ⚠ Cannot verify merge-base (may be OK for new hotfix)"
+  else
+    COMMITS_AHEAD=$(git rev-list --count main..$BRANCH 2>/dev/null || echo "0")
+    echo "  ✓ Commits ahead of main: $COMMITS_AHEAD"
+    
+    if [ "$COMMITS_AHEAD" -gt 10 ]; then
+      echo -e "  ${YELLOW}⚠ WARNING: Large number of commits for hotfix ($COMMITS_AHEAD)${NC}"
+      echo "    Hotfixes should be minimal and focused"
+    fi
+  fi
+  
+  echo "  ✓ Hotfix will be tested in isolated 'hotfix-test' environment"
+  echo "  ✓ No develop/uat contamination during testing"
+  echo "  ✓ Auto-tag will be created after merge to main"
+  echo ""
+fi
+
+# Additional validation for release
+if [ "$CHANGE_TYPE" = "RELEASE" ]; then
+  echo -e "${YELLOW}⚠ RELEASE Validation:${NC}"
+  
+  # Check if tag exists
+  if git rev-parse "$VERSION" >/dev/null 2>&1; then
+    echo -e "  ${RED}✗ ERROR: Tag already exists: $VERSION${NC}"
+    echo "    Choose a new version number"
+    exit 1
+  else
+    echo "  ✓ Tag does not exist: $VERSION (OK to create)"
+  fi
+  
+  # Check package.json has matching version
+  if grep -q "\"version\": \"${VERSION#v}\"" package.json 2>/dev/null; then
+    echo "  ✓ package.json version matches: $VERSION"
+  else
+    echo -e "  ${YELLOW}⚠ WARNING: package.json version may not match release version${NC}"
+    echo "    Ensure version is bumped before merge"
+  fi
+  
+  echo ""
+fi
+
+echo -e "${BLUE}═════════════════════════════════════════${NC}"
+echo -e "${GREEN}✓ Validation passed${NC}"
+echo -e "${BLUE}═════════════════════════════════════════${NC}"
+```
+
+Make it executable:
+```bash
+chmod +x scripts/validate-change-type.sh
+```
+
+---
+
+## 12. GitLab CI/CD Rules Summary
+
+```yaml name=cicd-rules-summary.yaml
+# Rules for each stage based on branch type
+
+rules:
+  # Only run on specific branches
+  validate:
+    - when: always
+      only:
+        - merge_requests
+        - branches
+        - tags
+
+  test:
+    - when: always
+      only:
+        - merge_requests
+        - main
+        - uat
+        - develop
+        - /^(feature|bugfix|hotfix|release)\/.*/
+
+  build:
+    - when: on_success
+      only:
+        - main
+        - uat
+        - develop
+        - /^(feature|bugfix|hotfix|release)\/.*/
+
+  deploy-hotfix-test:
+    - when: on_success
+      only:
+        - /^hotfix\/prod\/.*/
+
+  deploy-dev:
+    - when: on_success
+      only:
+        - develop
+
+  deploy-uat:
+    - when: manual  # Manual trigger for UAT
+      only:
+        - uat
+
+  deploy-prod:
+    - when: manual  # ALWAYS manual for production
+      only:
+        - main
+        - tags
+
+  cleanup:
+    - when: on_success
+      only:
+        - /^(feature|bugfix|hotfix|release)\/.*/
+
+  version:
+    - when: on_success
+      only:
+        - main
+        - /^(hotfix|release)\/.*/
+```
+
+---
+
+## 13. Complete Validation Checklist
+
+```markdown name=VALIDATION_CHECKLIST.md
+# Change Type Validation Checklist
+
+## FEATURE
+- [ ] Branch name: `feature/JIRA-XXX-description`
+- [ ] Source: `develop`
+- [ ] MR target: `develop`
+- [ ] Tests: All passing
+- [ ] Code review: 1+ approval
+- [ ] No version tag created
+- [ ] Auto-deploy to Dev after merge
+- [ ] Branch auto-deleted after merge
+
+## BUGFIX (Dev)
+- [ ] Branch name: `bugfix/dev/JIRA-XXX-description`
+- [ ] Source: `develop`
+- [ ] MR target: `develop` (+ merge-up to uat/main eventually)
+- [ ] Tests: All passing
+- [ ] Code review: 1+ approval
+- [ ] No version tag created
+- [ ] Merge-up to next environment after merge
+- [ ] Branch auto-deleted after all merges
+
+## BUGFIX (UAT)
+- [ ] Branch name: `bugfix/uat/JIRA-XXX-description`
+- [ ] Source: `uat`
+- [ ] MR target: `uat` (+ merge-up to develop)
+- [ ] Tests: All passing
+- [ ] Code review: 1+ approval
+- [ ] No version tag created
+- [ ] DO NOT merge to main
+- [ ] Merge-up to develop after uat merge
+- [ ] Branch auto-deleted
+
+## HOTFIX
+- [ ] Branch name: `hotfix/prod/JIRA-XXX-description`
+- [ ] Source: **MUST be main** (verify with `git log`)
+- [ ] Commits minimal and focused (max 10 commits)
+- [ ] Commit messages reference JIRA ticket
+- [ ] Tests: ALL passing (unit, integration, e2e)
+- [ ] Security scan: PASSING
+- [ ] Code review: 2+ approvals (leads + security)
+- [ ] Deployed to hotfix-test first (isolated)
+- [ ] QA sign-off in hotfix-test environment
+- [ ] MR target: main
+- [ ] After main merge:
+  - [ ] Auto-tag created (v1.2.3 → v1.2.4 PATCH)
+  - [ ] GitLab Release created
+  - [ ] Deploy to Prod (manual trigger)
+  - [ ] Propagate to uat (via MR)
+  - [ ] Propagate to develop (via MR)
+- [ ] develop and uat NOT contaminated during testing
+- [ ] Branch auto-deleted after merge
+- [ ] hotfix-test environment auto-cleanup after 24h
+
+## RELEASE
+- [ ] Branch name: `release/vX.Y.Z` (strict semantic versioning)
+- [ ] Source: `develop`
+- [ ] Version doesn't exist as git tag yet
+- [ ] package.json version bumped
+- [ ] CHANGELOG.md updated
+- [ ] Tests: ALL passing
+- [ ] Security scan: PASSING
+- [ ] Code review: 2+ approvals
+- [ ] MR target: main
+- [ ] After main merge:
+  - [ ] Auto-tag created (from branch name)
+  - [ ] GitLab Release created
+  - [ ] Deploy to Prod (manual trigger)
+  - [ ] Propagate to uat
+  - [ ] Merge back to develop (important!)
+- [ ] Branch auto-deleted after merge
+
+## NO CHANGE (Direct to main/uat/develop)
+- [ ] ❌ NEVER push directly to protected branches
+- [ ] ❌ ALWAYS use MR (merge request)
+- [ ] ❌ NEVER force-push to protected branches
+```
+
+---
+
+## 14. Troubleshooting Guide
+
+```bash name=TROUBLESHOOTING.md
+# Common Issues and Solutions
+
+## Issue 1: Hotfix merged to develop before main
+
+Symptom: Hotfix in develop but not in main
+Problem: Features will be released with hotfix in wrong order
+
+Solution:
+1. Revert the hotfix from develop
+   git checkout develop
+   git revert <hotfix-merge-commit-hash>
+   git push origin develop
+
+2. Ensure hotfix is in main first
+3. Then re-apply to develop via main merge
+
+Rule: Hotfix MUST always go main → uat → develop
+
+
+## Issue 2: Hotfix branch has 20+ commits
+
+Symptom: Hotfix branch too large
+Problem: Should be minimal fix only
+
+Solution:
+1. Squash commits before merging
+   git rebase -i origin/main
+   (squash all commits into 1-2)
+
+2. Or create new hotfix with clean history
+   git checkout -b hotfix/prod/JIRA-500-clean
+   git cherry-pick <good-commits>
+   (leave out unrelated commits)
+
+
+## Issue 3: Feature accidentally includes hotfix fix
+
+Symptom: Feature branch has hotfix code
+Problem: Hotfix will be released with feature
+
+Solution:
+1. Check what's in feature
+   git diff feature/JIRA-123..main
+
+2. If hotfix code detected, rebase feature
+   git fetch origin
+   git rebase origin/develop feature/JIRA-123
+
+3. Or cherry-pick only feature commits
+   git checkout develop
+   git checkout -b feature/JIRA-123-clean
+   git cherry-pick <feature-commits-only>
+
+
+## Issue 4: Version tag already exists
+
+Symptom: "Tag v1.2.0 already exists" error
+Problem: Trying to create duplicate tag
+
+Solution:
+1. Check existing tag
+   git tag -l 'v*.*.*' --sort=-v:refname | head -5
+
+2. Use next version
+   release/v1.2.1 (not v1.2.0)
+
+3. Or if accidentally created, delete and recreate
+   git tag -d v1.2.0
+   git push origin --delete v1.2.0
+   git tag -a v1.2.0 -m "Retry"
+   git push origin v1.2.0
+
+
+## Issue 5: Merge conflict between branches
+
+Symptom: MR shows merge conflicts
+Problem: Same code modified in both branches
+
+Solution:
+1. For feature conflicts with develop
+   git checkout feature/JIRA-123
+   git fetch origin
+   git merge origin/develop
+   
+   # Resolve conflicts in editor
+   vim <conflicted-file>
+   
+   git add <file>
+   git commit -m "Resolve conflict with develop"
+   git push origin feature/JIRA-123
+
+2. For hotfix conflicts with develop
+   Usually means hotfix code was already in develop
+   Check git log to understand history
+
+3. Prefer develop's changes for hotfix conflicts
+   # In conflict marker: keep uat/develop, discard hotfix duplicate
+
+
+## Issue 6: Hotfix broke something new
+
+Symptom: Hotfix works in hotfix-test but breaks in prod
+Problem: Environment difference or incomplete testing
+
+Solution:
+1. Rollback immediately
+   git checkout main
+   git revert <hotfix-merge-commit>
+   git push origin main
+   
+   Pipeline auto-runs, will show v1.2.3 (previous version)
+
+2. Deploy rollback to prod
+   Manual approval in pipeline for revert
+
+3. Investigate root cause
+   Why did hotfix work in hotfix-test but not prod?
+   - Different data?
+   - Different load?
+   - Different config?
+
+4. Create detailed hotfix
+   Fix root cause, not just symptoms
+   Test more thoroughly in hotfix-test
+
+
+## Issue 7: Feature branch way behind develop
+
+Symptom: Feature branch 50+ commits behind
+Problem: Stale branch, many conflicts likely
+
+Solution:
+1. Rebase on latest develop
+   git fetch origin
+   git checkout feature/JIRA-123
+   git rebase origin/develop
+   
+   Fix any conflicts that arise
+   
+   git push origin feature/JIRA-123 --force-with-lease
+
+2. Or just start fresh
+   git checkout develop
+   git pull origin develop
+   git checkout -b feature/JIRA-123-v2
+   (manually apply your changes)
+
+Prevent: Rebase feature branches regularly
+
+
+## Issue 8: Wrong branch created from main
+
+Symptom: Created hotfix/prod from develop instead of main
+Problem: Will have unwanted features in hotfix
+
+Solution:
+1. Check current branch
+   git branch -vv
+   git merge-base HEAD origin/main
+
+2. If wrong base, create new hotfix
+   git checkout main
+   git pull origin main
+   git checkout -b hotfix/prod/JIRA-500-correct
+   
+   Cherry-pick only the fix commits:
+   git cherry-pick <fix-commit-sha>
+
+3. Delete old hotfix
+   git push origin --delete hotfix/prod/JIRA-500-wrong
+   git branch -D hotfix/prod/JIRA-500-wrong
+
+Rule: Always verify you're on correct branch
+  $ git log --oneline -1
+  (check tag shows main version)
+
+
+## Issue 9: Hotfix-test env not deploying
+
+Symptom: deploy:hotfix-test job fails
+Problem: May be infrastructure or config issue
+
+Solution:
+1. Check pipeline logs
+   GitLab UI → Pipeline → deploy:hotfix-test → Logs
+
+2. Common issues:
+   - Kubernetes cluster unavailable: Contact DevOps
+   - Image pull error: Check registry credentials
+   - Resource limits: No nodes available
+   - Network policy: Communication blocked
+
+3. Manual test deployment
+   kubectl apply -f deploy/hotfix-test-deployment.yaml
+
+4. If still failing, test in dev instead
+   Deploy hotfix branch to dev for testing
+   (Less ideal but possible workaround)
+
+
+## Issue 10: Cleanup stage didn't delete branch
+
+Symptom: Branch still exists after merge
+Problem: Cleanup job may have failed or not run
+
+Solution:
+1. Manual deletion
+   git push origin --delete hotfix/prod/JIRA-500
+   git branch -D hotfix/prod/JIRA-500
+
+2. Check cleanup job logs
+   Pipeline → cleanup:delete-* → Logs
+
+3. Future: Enable "Auto-delete head branch" in MR settings
+   Project → Settings → Merge requests → Auto-delete
+
+Workaround: Use `git branch -a` to see actual state
+```
+
+---
+
+## 15. Summary: Change Type Decision Matrix
+
+```
+Need to deploy a fix? Use this flowchart:
+
+┌───────────────────────────────────��─────────┐
+│   Is this a PRODUCTION ISSUE?               │
+└─────────────────────────────────────────────┘
+          │
+          ├─ YES (Critical, users affected)
+          │   └─→ HOTFIX
+          │       Branch: hotfix/prod/JIRA-500
+          │       From: main
+          │       Test: hotfix-test (isolated)
+          │       Deploy: main → Prod (manual)
+          │       Then: uat, develop (propagate)
+          │       Tag: Auto (v1.2.3 → v1.2.4) PATCH
+          │       Version: BUMPED PATCH
+          │
+          └─ NO (Dev/UAT issue)
+              └─→ Is this in UAT?
+                  │
+                  ├─ YES (UAT environment)
+                  │   └─→ BUGFIX (UAT)
+                  │       Branch: bugfix/uat/JIRA-125
+                  │       From: uat
+                  │       Test: uat
+                  │       Deploy: uat → develop (no main!)
+                  │       Tag: None (included in next release)
+                  │       Version: NONE
+                  │
+                  └─ NO (Dev only)
+                      ├─→ New feature?
+                      │   └─→ FEATURE
+                      │       Branch: feature/JIRA-123
+                      │       From: develop
+                      │       Test: dev
+                      │       Deploy: develop → dev (auto)
+                      │       Tag: None
+                      │       Version: MINOR (in release)
+                      │
+                      └─→ Bug in dev?
+                          └─→ BUGFIX (Dev)
+                              Branch: bugfix/dev/JIRA-124
+                              From: develop
+                              Test: dev
+                              Deploy: develop → dev (auto)
+                              Tag: None
+                              Version: NONE
+
+Planning a release? (combining features/bugfixes)
+    └─→ RELEASE
+        Branch: release/v1.2.0
+        From: develop (after features merged)
+        Test: uat (manual trigger)
+        Deploy: main → Prod (manual)
+        Tag: Auto (from branch name)
+        Version: MINOR/MAJOR
+```
+
+---
+
+This complete solution provides:
+
+✅ **Hotfix Testing Isolation** - Test in dedicated hotfix-test env without contaminating develop/uat
+✅ **Automatic Semantic Versioning** - Auto-bump patch version (v1.2.3 → v1.2.4) based on latest tag
+✅ **Full Pipeline Validation** - Change type detection, branch naming, commit validation
+✅ **Environment Separation** - Dev, UAT, Prod, hotfix-test with proper deployment flows
+✅ **Automatic Cleanup** - Branches deleted after merge, hotfix-test env cleanup after 24h
+✅ **Git Tag Management** - Automatic tag creation and GitLab release generation
+✅ **Audit Trail** - Full history via commits, tags, and releases
+✅ **Merge-up Strategy** - Hotfixes propagate main → uat → develop (no feature contamination)
+✅ **Clear Definitions** - Feature vs Bugfix vs Hotfix vs Release with specific rules
+✅ **Rollback Capability** - Easy revert via git revert (no hard reset needed)
